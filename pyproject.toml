@@ -1,7 +1,28 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "nexus"
 version = "0.1.0"
-description = "Add your description here"
+description = "NEXUS"
 readme = "README.md"
-requires-python = ">=3.14"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "psycopg[binary,pool]",
+    "boto3",
+    "langchain",
+    "langchain-aws",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
