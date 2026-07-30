@@ -1,4 +1,8 @@
-# poller.
+"""Fallback poller: republish pending predictions when the changefeed sink fails.
+
+Disabled by default; enable the schedule in infra/template.yaml if the webhook
+path is unavailable.
+"""
 from __future__ import annotations
 
 import json

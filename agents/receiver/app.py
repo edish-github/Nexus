@@ -1,4 +1,4 @@
-#Changefeed webhook receiver
+"""Changefeed webhook receiver: validate, parse, and republish to EventBridge."""
 from __future__ import annotations
 
 import hmac
@@ -28,7 +28,7 @@ def _publish(rows: list[dict[str, Any]]) -> int:
     entries = []
     for row in rows:
         pred = row.get("after")
-        if not pred: 
+        if not pred:
             continue
         idem = f"{pred.get('id')}:{row.get('updated', '')}"
         entries.append(
