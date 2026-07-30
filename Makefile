@@ -12,28 +12,26 @@ help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-# Local Python
-deps:  ## Install local Python deps for scripts (migrate/smoke)
-	uv pip install 'psycopg[binary]' numpy
+deps: ## Install local Python dependencies
+	uv sync
 
-lint:  ## Ruff lint
-	ruff check .
+lint: ## Ruff lint
+	uv run ruff check .
 
-fmt:  ## Ruff format
-	ruff format .
+fmt: ## Ruff format
+	uv run ruff format .
 
-# Database
-migrate:  ## Apply all pending SQL migrations (idempotent)
-	python scripts/migrate.py
+migrate: ## Apply pending SQL migrations
+	uv run --no-project python scripts/migrate.py
 
-migrate-dry:  ## Show pending migrations without applying
-	python scripts/migrate.py --dry-run
+migrate-dry: ## Show pending migrations
+	uv run --no-project python scripts/migrate.py --dry-run
 
-seed-smoke:  ## Smoke test: seed rows + hybrid vector query + AOST query
-	python scripts/smoke_test.py
+seed-smoke: ## Seed demo data and run smoke test
+	uv run --no-project python scripts/smoke_test.py
 
-changefeed:  ## Create the predictions changefeed (edit sql/changefeed.sql first)
-	python scripts/migrate.py --file sql/changefeed.sql
+changefeed: ## Create predictions changefeed
+	uv run --no-project python scripts/migrate.py --file sql/changefeed.sql
 
 # AWS stack (SAM)
 build:  ## sam build (container build for native deps)

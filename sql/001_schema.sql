@@ -9,7 +9,6 @@ CREATE TABLE IF NOT EXISTS incidents (
             'healing','resolved','postmortem'
         )),
     affected_services   TEXT[] NOT NULL,
-    region              TEXT NOT NULL DEFAULT 'us-east-1',
     was_predicted       BOOLEAN NOT NULL DEFAULT false,
     was_prevented       BOOLEAN NOT NULL DEFAULT false,
     was_auto_resolved   BOOLEAN NOT NULL DEFAULT false,
@@ -18,10 +17,8 @@ CREATE TABLE IF NOT EXISTS incidents (
     symptom_embedding   VECTOR(1024),
     detected_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     resolved_at         TIMESTAMPTZ,
-    mttr_seconds        INT,
-    crdb_region         crdb_internal_region NOT NULL
-        DEFAULT default_to_database_primary_region(gateway_region())
-) LOCALITY REGIONAL BY ROW AS crdb_region;
+    mttr_seconds        INT
+) LOCALITY REGIONAL BY ROW;
 
 CREATE VECTOR INDEX IF NOT EXISTS incidents_symptom_embedding_idx
     ON incidents (symptom_embedding vector_cosine_ops);
@@ -31,7 +28,7 @@ CREATE TABLE IF NOT EXISTS precursor_snapshots (
     id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     incident_id           UUID REFERENCES incidents(id),
     service_name          TEXT NOT NULL,
-    region                TEXT NOT NULL DEFAULT 'us-east-1',
+    region                TEXT NOT NULL DEFAULT 'aws-us-east-1',
     trajectory_embedding  VECTOR(1024) NOT NULL,
     window_start          TIMESTAMPTZ NOT NULL,
     window_end            TIMESTAMPTZ NOT NULL,
@@ -72,10 +69,8 @@ CREATE TABLE IF NOT EXISTS playbooks (
     last_used_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- 90-day disuse TTL: bump expires_at = now() + 90d each time a playbook is used
-    expires_at          TIMESTAMPTZ NOT NULL DEFAULT now() + INTERVAL '90 days',
-    crdb_region         crdb_internal_region NOT NULL
-        DEFAULT default_to_database_primary_region(gateway_region())
-) LOCALITY REGIONAL BY ROW AS crdb_region;
+    expires_at          TIMESTAMPTZ NOT NULL DEFAULT now() + INTERVAL '90 days'
+) LOCALITY REGIONAL BY ROW;
 
 ALTER TABLE playbooks SET (ttl_expiration_expression = 'expires_at', ttl_job_cron = '0 * * * *');
 
