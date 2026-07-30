@@ -12,6 +12,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "psycopg[binary,pool]",
+    "numpy",
     "boto3",
     "langchain",
     "langchain-aws",
@@ -20,9 +21,23 @@ dependencies = [
     "python-dotenv",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pytest",
+]
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "-ra -q"
 testpaths = [
     "tests",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "frontend", "docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
