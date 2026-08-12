@@ -106,23 +106,23 @@ def apply_file(conn, path: Path, dry_run: bool) -> None:
     import psycopg
 
     statements = split_statements(path.read_text())
-    print(f"→ {path.name}  ({len(statements)} statements)")
+    print(f"{path.name}  ({len(statements)} statements)")
     if dry_run:
         for s in statements:
-            print(f"    {s.splitlines()[0][:100]} …")
+            print(f"    {s.splitlines()[0][:100]} ...")
         return
     for s in statements:
         try:
             conn.execute(s)
         except psycopg.Error as e:
-            print(f"  ✗ statement failed:\n    {s[:200]}\n  {e}", file=sys.stderr)
+            print(f"  FAILED statement:\n    {s[:200]}\n  {e}", file=sys.stderr)
             raise
     conn.execute(
         "INSERT INTO schema_migrations (filename) VALUES (%s) "
         "ON CONFLICT (filename) DO NOTHING",
         (path.name,),
     )
-    print(f"  ✓ applied {path.name}")
+    print(f"  applied {path.name}")
 
 
 def main() -> int:

@@ -45,7 +45,7 @@ def main() -> int:
 
     keep = "--keep" in sys.argv
     with psycopg.connect(dsn, autocommit=True) as conn:
-        print("1) seeding throwaway rows …")
+        print("1) seeding throwaway rows")
         inc_id = conn.execute(
             """
             INSERT INTO incidents
@@ -91,7 +91,7 @@ def main() -> int:
 
         query_vec = vec(10)  # closest to the first precursor snapshot
 
-        print("2) hybrid SQL + vector query (category filter + cosine k-NN) …")
+        print("2) hybrid SQL + vector query (category filter + cosine k-NN)")
         hybrid = """
             SELECT id, outcome_category,
                    1 - (trajectory_embedding <=> %s::VECTOR) AS similarity
@@ -112,9 +112,9 @@ def main() -> int:
         used_index = "trajectory_embedding_idx" in plan or "vector" in plan.lower()
         print(f"   vector index used by planner: {used_index}")
         if not used_index:
-            print("   ⚠ planner did not report the vector index — check EXPLAIN:\n" + plan)
+            print("   WARNING: planner did not report the vector index. EXPLAIN:\n" + plan)
 
-        print("3) AS OF SYSTEM TIME query (historical read) …")
+        print("3) AS OF SYSTEM TIME query (historical read)")
         aost = conn.execute(
             "SELECT count(*) FROM precursor_snapshots AS OF SYSTEM TIME '-5s' "
             "WHERE outcome_category = 'connection_pool_exhaustion'"
@@ -128,15 +128,15 @@ def main() -> int:
         print(f"   follower-read playbook count: {follower}")
 
         if keep:
-            print(f"\n✓ smoke test passed (rows kept, tagged '{TAG}')")
+            print(f"\nsmoke test passed (rows kept, tagged '{TAG}')")
             return 0
 
-        print("4) cleaning up throwaway rows …")
+        print("4) cleaning up throwaway rows")
         conn.execute("DELETE FROM playbooks WHERE name = %s", (f"{TAG} playbook",))
         conn.execute("DELETE FROM precursor_snapshots WHERE incident_id = %s", (inc_id,))
         conn.execute("DELETE FROM incidents WHERE id = %s", (inc_id,))
 
-    print("\n✓ smoke test passed — schema, vector index, and AOST all working.")
+    print("\nsmoke test passed: schema, vector index, and AOST all working.")
     return 0
 
 
