@@ -5,9 +5,23 @@ build/
 dist/
 wheels/
 *.egg-info
+.ruff_cache/
 
 # Virtual environments
 .venv
-docs/
+
+# Secrets and local config
 .env
-__pycache__/
+
+# Local-only reference material
+docs/
+
+# Node
+node_modules/
+frontend/dist/
+
+# AWS SAM build output
+.aws-sam/
+
+# OS
+.DS_Store
