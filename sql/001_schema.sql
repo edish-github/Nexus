@@ -1,4 +1,5 @@
--- TABLE 1: incidents
+-- Incidents: one row per detected or predicted failure, homed in the region
+-- that observed it.
 CREATE TABLE IF NOT EXISTS incidents (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title               TEXT NOT NULL,
@@ -23,7 +24,9 @@ CREATE TABLE IF NOT EXISTS incidents (
 CREATE VECTOR INDEX IF NOT EXISTS incidents_symptom_embedding_idx
     ON incidents (symptom_embedding vector_cosine_ops);
 
--- TABLE 2: precursor_snapshots
+-- Precursor snapshots: the trailing telemetry window before an incident,
+-- embedded for k-NN matching. Negative rows (led_to_incident = false) are the
+-- windows that recovered on their own.
 CREATE TABLE IF NOT EXISTS precursor_snapshots (
     id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     incident_id           UUID REFERENCES incidents(id),
@@ -44,7 +47,8 @@ CREATE VECTOR INDEX IF NOT EXISTS precursor_trajectory_embedding_idx
 CREATE INDEX IF NOT EXISTS precursor_outcome_idx
     ON precursor_snapshots (outcome_category, led_to_incident);
 
--- TABLE 3: playbooks
+-- Playbooks: the evolving memory. Fitness is never stored as a float; it is
+-- derived from the Beta(success_count + 1, failure_count + 1) posterior.
 CREATE TABLE IF NOT EXISTS playbooks (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name                TEXT NOT NULL,
@@ -53,7 +57,7 @@ CREATE TABLE IF NOT EXISTS playbooks (
     remediation_steps   JSONB NOT NULL,
     inverse_steps       JSONB NOT NULL DEFAULT '[]'::JSONB,
     reversible          BOOLEAN NOT NULL DEFAULT true,
-    -- selection counters posterior derived from success/failure
+    -- Trial counters; the posterior is computed from these at selection time.
     success_count       INT NOT NULL DEFAULT 0,
     failure_count       INT NOT NULL DEFAULT 0,
     generation          INT NOT NULL DEFAULT 1,
@@ -80,7 +84,8 @@ CREATE VECTOR INDEX IF NOT EXISTS playbooks_precursor_embedding_idx
 CREATE INDEX IF NOT EXISTS playbooks_category_status_idx
     ON playbooks (outcome_category, status);
 
--- TABLE 4: institutional_playbooks
+-- Institutional playbooks: proven strategies promoted to a GLOBAL table so
+-- every region reads them locally.
 CREATE TABLE IF NOT EXISTS institutional_playbooks (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     source_playbook_id  UUID NOT NULL REFERENCES playbooks(id),
@@ -100,14 +105,16 @@ CREATE TABLE IF NOT EXISTS institutional_playbooks (
 CREATE VECTOR INDEX IF NOT EXISTS institutional_precursor_embedding_idx
     ON institutional_playbooks (precursor_embedding vector_cosine_ops);
 
--- TABLE 5: predictions for changefeed
+-- Predictions: the changefeed source table. An INSERT here is what drives the
+-- webhook into the Step Functions pipeline.
 CREATE TABLE IF NOT EXISTS predictions (
     id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     service_name             TEXT NOT NULL,
     causal_pattern           TEXT NOT NULL,
     predicted_outcome        TEXT NOT NULL,
     predicted_severity       INT NOT NULL CHECK (predicted_severity BETWEEN 1 AND 5),
-    -- Beta posterior over matched precursors' outcomes
+    -- Beta posterior over the matched precursors' outcomes, stored as its two
+    -- parameters so the credible interval can be recomputed downstream.
     alpha                    FLOAT NOT NULL DEFAULT 1.0,
     beta                     FLOAT NOT NULL DEFAULT 1.0,
     matching_precursor_count INT NOT NULL DEFAULT 0,
@@ -128,12 +135,14 @@ CREATE TABLE IF NOT EXISTS predictions (
 CREATE INDEX IF NOT EXISTS predictions_status_created_idx
     ON predictions (prevention_status, created_at);
 
--- Idempotent claim (Sentinel): first writer wins via SELECT ... FOR UPDATE
+-- Dedup guard for Oracle: at most one open prediction per service and
+-- category. Sentinel's claim is a separate SELECT ... FOR UPDATE.
 CREATE UNIQUE INDEX IF NOT EXISTS predictions_active_dedup_idx
     ON predictions (service_name, predicted_outcome)
     WHERE prevention_status IN ('pending','preventing');
 
--- TABLE 6: telemetry_embeddings  (2h row-level TTL)
+-- Telemetry embeddings: the sensory tier. Rows expire after 2 hours; only the
+-- windows that precede an incident are promoted into precursor_snapshots.
 CREATE TABLE IF NOT EXISTS telemetry_embeddings (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     service_name  TEXT NOT NULL,
@@ -148,7 +157,8 @@ CREATE TABLE IF NOT EXISTS telemetry_embeddings (
 CREATE VECTOR INDEX IF NOT EXISTS telemetry_embedding_idx
     ON telemetry_embeddings (embedding vector_cosine_ops);
 
--- TABLE 7: evolution_log  (append-only audit trail)
+-- Evolution log: append-only record of every playbook lifecycle transition.
+-- No lifecycle mutation is committed without its row here.
 CREATE TABLE IF NOT EXISTS evolution_log (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_type          TEXT NOT NULL
