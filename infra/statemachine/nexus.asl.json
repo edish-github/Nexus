@@ -1,0 +1,96 @@
+{
+  "Comment": "NEXUS prevention pipeline: Sentinel -> Diagnostician -> Guardian -> Chronicler. Started by an EventBridge rule on prediction.created events.",
+  "StartAt": "Sentinel",
+  "States": {
+    "Sentinel": {
+      "Type": "Task",
+      "Resource": "${SentinelArn}",
+      "Comment": "Claim the prediction (idempotent), run tiered Thompson-sampled competition.",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "Diagnostician"
+    },
+    "Diagnostician": {
+      "Type": "Task",
+      "Resource": "${DiagnosticianArn}",
+      "Comment": "RCA + precursor snapshot writer.",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "Guardian"
+    },
+    "Guardian": {
+      "Type": "Task",
+      "Resource": "${GuardianArn}",
+      "Comment": "Execute the reversible fix, verify, roll back on degradation.",
+      "TimeoutSeconds": 120,
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "Chronicler"
+        }
+      ],
+      "Next": "Chronicler"
+    },
+    "Chronicler": {
+      "Type": "Task",
+      "Resource": "${ChroniclerArn}",
+      "Comment": "Playbook lifecycle: growth, mutation, merge, promotion, retirement. Runs after Guardian, including on rollback.",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "PipelineFailed"
+        }
+      ],
+      "End": true
+    },
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "NexusPipelineError",
+      "Cause": "A NEXUS pipeline stage failed after retries; see the execution history and the failed task's CloudWatch logs."
+    }
+  }
+}

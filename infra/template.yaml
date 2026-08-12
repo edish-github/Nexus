@@ -1,0 +1,343 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  NEXUS infrastructure: shared Lambda layer, agent functions, changefeed receiver
+  and fallback poller, EventBridge bus, Step Functions pipeline, S3 artifacts,
+  Secrets Manager, and CloudWatch.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: development
+    AllowedValues: [development, staging, production]
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-opus-5
+    Description: Claude model id (Bedrock) for reasoning, mutation, and merge.
+  BedrockEmbeddingModelId:
+    Type: String
+    Default: amazon.titan-embed-text-v2:0
+    Description: Titan Embeddings V2 (1024-dim output).
+  EmbeddingDim:
+    Type: String
+    Default: "1024"
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    Timeout: 30
+    MemorySize: 512
+    Layers:
+      - !Ref SharedLayer
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        EVENT_BUS_NAME: !Ref NexusBus
+        METRIC_NAMESPACE: NEXUS
+        ARTIFACTS_BUCKET: !Ref ArtifactsBucket
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        BEDROCK_EMBEDDING_MODEL_ID: !Ref BedrockEmbeddingModelId
+        EMBEDDING_DIM: !Ref EmbeddingDim
+        DB_SECRET_NAME: !Ref DbSecret
+        CHANGEFEED_SECRET_NAME: !Ref ChangefeedSecret
+        CCLOUD_SECRET_NAME: !Ref CcloudSecret
+
+Resources:
+  # Shared Lambda layer: psycopg3 + numpy + nexus_common (db/bedrock/log/config)
+  SharedLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: python3.12
+    Properties:
+      LayerName: !Sub "nexus-shared-${Environment}"
+      ContentUri: ../layers/shared
+      CompatibleRuntimes: [python3.12]
+      CompatibleArchitectures: [arm64]
+      RetentionPolicy: Delete
+
+  # Secrets (created empty; populate after deploy — see README).
+  #   put-secret-value --secret-id nexus/db --secret-string '{"dsn":"postgresql://..."}'
+  DbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: nexus/db
+      Description: CockroachDB connection string (+ inline CA cert) for NEXUS.
+      SecretString: '{"dsn":"REPLACE_ME","ca_cert":"REPLACE_ME"}'
+  ChangefeedSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: nexus/changefeed
+      Description: Shared secret the changefeed webhook must present.
+      SecretString: '{"shared_secret":"REPLACE_ME"}'
+  CcloudSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: nexus/ccloud
+      Description: Read-only ccloud service-account API key (Guardian).
+      SecretString: '{"api_key":"REPLACE_ME"}'
+
+  # S3 artifacts bucket (prefixes are key conventions: incidents/, playbook-versions/, demo-assets/)
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "nexus-artifacts-${AWS::AccountId}-${Environment}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # EventBridge custom bus
+  NexusBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: nexus-bus
+
+  # Changefeed receiver (Function URL, in-code shared-secret check)
+  ReceiverFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "nexus-receiver-${Environment}"
+      CodeUri: ../agents/receiver
+      Handler: app.handler
+      FunctionUrlConfig:
+        AuthType: NONE
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: events:PutEvents
+              Resource: !GetAtt NexusBus.Arn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref ChangefeedSecret
+
+  # Fallback poller — schedule disabled by default
+  PollerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "nexus-poller-${Environment}"
+      CodeUri: ../agents/poller
+      Handler: app.handler
+      Events:
+        PollSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Enabled: false
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: events:PutEvents
+              Resource: !GetAtt NexusBus.Arn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref DbSecret
+
+  # Oracle — scheduled predictor (60s interval, disabled by default)
+  OracleFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "nexus-oracle-${Environment}"
+      CodeUri: ../agents/oracle
+      Handler: app.handler
+      Timeout: 60
+      Events:
+        PredictSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Enabled: false
+      Policies:
+        - !Ref DbReadPolicy
+        - !Ref BedrockInvokePolicy
+        - !Ref CloudWatchMetricsPolicy
+
+  # Pipeline agents (invoked by Step Functions)
+  SentinelFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "nexus-sentinel-${Environment}"
+      CodeUri: ../agents/sentinel
+      Handler: app.handler
+      Policies:
+        - !Ref DbReadPolicy
+        - !Ref CloudWatchMetricsPolicy
+
+  DiagnosticianFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "nexus-diagnostician-${Environment}"
+      CodeUri: ../agents/diagnostician
+      Handler: app.handler
+      Timeout: 60
+      Policies:
+        - !Ref DbReadPolicy
+        - !Ref BedrockInvokePolicy
+        - !Ref S3ArtifactsPolicy
+        - !Ref CloudWatchMetricsPolicy
+
+  GuardianFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "nexus-guardian-${Environment}"
+      CodeUri: ../agents/guardian
+      Handler: app.handler
+      Timeout: 120
+      Policies:
+        - !Ref DbReadPolicy
+        - !Ref S3ArtifactsPolicy
+        - !Ref CloudWatchMetricsPolicy
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref CcloudSecret
+
+  ChroniclerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "nexus-chronicler-${Environment}"
+      CodeUri: ../agents/chronicler
+      Handler: app.handler
+      Timeout: 60
+      Policies:
+        - !Ref DbReadPolicy
+        - !Ref BedrockInvokePolicy
+        - !Ref CloudWatchMetricsPolicy
+
+  # Reusable least-privilege managed policies (no wildcards on resources)
+  DbReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Ref DbSecret
+
+  BedrockInvokePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: bedrock:InvokeModel
+            Resource:
+              - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+              - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockEmbeddingModelId}"
+
+  S3ArtifactsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: [s3:PutObject, s3:GetObject]
+            Resource: !Sub "${ArtifactsBucket.Arn}/*"
+
+  CloudWatchMetricsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: cloudwatch:PutMetricData
+            Condition:
+              StringEquals:
+                cloudwatch:namespace: NEXUS
+            Resource: "*"
+
+  # Step Functions pipeline: Sentinel -> Diagnostician -> Guardian -> Chronicler
+  PipelineStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "nexus-pipeline-${Environment}"
+      Type: STANDARD
+      DefinitionUri: statemachine/nexus.asl.json
+      DefinitionSubstitutions:
+        SentinelArn: !GetAtt SentinelFunction.Arn
+        DiagnosticianArn: !GetAtt DiagnosticianFunction.Arn
+        GuardianArn: !GetAtt GuardianFunction.Arn
+        ChroniclerArn: !GetAtt ChroniclerFunction.Arn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource:
+                - !GetAtt SentinelFunction.Arn
+                - !GetAtt DiagnosticianFunction.Arn
+                - !GetAtt GuardianFunction.Arn
+                - !GetAtt ChroniclerFunction.Arn
+      Events:
+        PredictionCreated:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref NexusBus
+            Pattern:
+              source: [nexus.changefeed, nexus.poller]
+              detail-type: [prediction.created]
+
+  # CloudWatch dashboard
+  NexusDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "NEXUS-${Environment}"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Predictions & Preventions",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["NEXUS", "predictions_emitted"],
+                  ["NEXUS", "preventions"],
+                  ["NEXUS", "rollbacks"],
+                  ["NEXUS", "lifecycle_events"]
+                ],
+                "view": "timeSeries", "stat": "Sum", "period": 60
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Pipeline Lambda errors",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "nexus-sentinel-${Environment}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "nexus-guardian-${Environment}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "nexus-chronicler-${Environment}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "nexus-receiver-${Environment}"]
+                ],
+                "view": "timeSeries", "stat": "Sum", "period": 60
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ReceiverUrl:
+    Description: Changefeed webhook endpoint (put this in sql/changefeed.sql).
+    Value: !GetAtt ReceiverFunctionUrl.FunctionUrl
+  EventBusName:
+    Value: !Ref NexusBus
+  StateMachineArn:
+    Value: !Ref PipelineStateMachine
+  ArtifactsBucketName:
+    Value: !Ref ArtifactsBucket
+  DashboardName:
+    Value: !Sub "NEXUS-${Environment}"
