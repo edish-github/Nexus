@@ -1,0 +1,21 @@
+@import 'tailwindcss';
+
+/* Color semantics used across the dashboard:
+   green = proven, amber = experimental, red = failing, grey = retired. */
+@theme {
+  --color-nexus-proven: oklch(0.72 0.17 152);
+  --color-nexus-experimental: oklch(0.79 0.16 78);
+  --color-nexus-failing: oklch(0.65 0.21 25);
+  --color-nexus-retired: oklch(0.55 0.01 260);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background-color: oklch(0.16 0.01 260);
+  color: oklch(0.93 0.01 260);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
