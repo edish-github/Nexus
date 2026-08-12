@@ -1,0 +1,6 @@
+# Shared Lambda layer dependencies (built into layers/shared/python by `sam build`).
+# boto3/botocore are provided by the Lambda runtime and intentionally omitted.
+psycopg[binary]==3.2.*
+psycopg-pool==3.2.*
+numpy==2.*
+pydantic==2.*
