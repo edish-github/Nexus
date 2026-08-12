@@ -1,7 +1,3 @@
-[build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "nexus"
 version = "0.1.0"
@@ -21,11 +17,16 @@ dependencies = [
     "python-dotenv",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "ruff",
     "pytest",
 ]
+
+# NEXUS is an application, not a distributable library: the Lambda code ships
+# via the SAM layer in layers/shared, so uv must not try to build this repo.
+[tool.uv]
+package = false
 
 [tool.pytest.ini_options]
 minversion = "6.0"

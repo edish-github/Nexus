@@ -22,16 +22,16 @@ fmt: ## Ruff format
 	uv run ruff format .
 
 migrate: ## Apply pending SQL migrations
-	uv run --no-project python scripts/migrate.py
+	uv run python scripts/migrate.py
 
 migrate-dry: ## Show pending migrations
-	uv run --no-project python scripts/migrate.py --dry-run
+	uv run python scripts/migrate.py --dry-run
 
 seed-smoke: ## Seed demo data and run smoke test
-	uv run --no-project python scripts/smoke_test.py
+	uv run python scripts/smoke_test.py
 
 changefeed: ## Create predictions changefeed
-	uv run --no-project python scripts/migrate.py --file sql/changefeed.sql
+	uv run python scripts/migrate.py --file sql/changefeed.sql
 
 # AWS stack (SAM)
 build:  ## sam build (container build for native deps)
