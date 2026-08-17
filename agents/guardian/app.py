@@ -122,7 +122,11 @@ def substrate_health() -> dict:
     except json.JSONDecodeError:
         return {"available": False, "reason": "ccloud returned non-JSON output",
                 "elapsed_ms": elapsed_ms}
-    clusters = payload.get("clusters", payload if isinstance(payload, list) else [])
+    # `ccloud cluster list --output json` returns a top-level JSON array. The type
+    # check has to come first: Python evaluates a `.get()` default eagerly, so
+    # `payload.get("clusters", payload if isinstance(...))` calls `.get` on the list
+    # before the guard is ever consulted and raises AttributeError every time.
+    clusters = payload if isinstance(payload, list) else payload.get("clusters", [])
     return {
         "available": True,
         "elapsed_ms": elapsed_ms,
