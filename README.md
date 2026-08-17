@@ -41,7 +41,7 @@ Makefile        one-command ops (seed/verify/test/deploy/migrate/live/…)
 | Dashboard UI (5 views, live-data-backed) | Complete; see `frontend/README.md` |
 | Oracle (predict with a Beta posterior) · Sentinel (claim, Thompson-sampled competition, tiered gate) | Complete, driven end to end by `make pipeline` |
 | Guardian (execute, verify, roll back) · Diagnostician (RCA, precursor writer, playbook birth) | Complete; the Bedrock-authored paths degrade to retrieved-evidence templates without credentials |
-| Chronicler (Darwinian lifecycle engine) | Handler stub only |
+| Chronicler (growth, shadow scoring, mutation, merge, promotion, retirement) | Complete; verified end to end by `make lifecycle`, and the two Bedrock-authored transitions degrade rather than invent |
 
 Key locked decisions: **Python 3.12** Lambdas · **AWS SAM** IaC · embedding dim
 **1024** (Titan Text Embeddings V2 default — *not* 1536) · `institutional_playbooks`
@@ -216,8 +216,8 @@ make pipeline-concurrency   # five deliveries of one prediction, one execution
 
 Step Functions is not deployed on a laptop, so `scripts/pipeline_local.py` plays
 its part: it starts the synthetic fleet in-process, ramps a service, feeds the
-sensory tier, and calls Sentinel → Diagnostician → Guardian in the state
-machine's order. Everything else is real — the same agent code, the same
+sensory tier, and calls Sentinel → Diagnostician → Guardian → Chronicler in the
+state machine's order. Everything else is real — the same agent code, the same
 queries, against the same cluster.
 
 **Oracle** matches the live telemetry window against `precursor_snapshots` (k=14)
@@ -247,7 +247,46 @@ incidents, and on a genuinely unprecedented pattern asks Bedrock for a playbook.
 Anything failing `PlaybookDraft` validation is rejected outright: a malformed
 genome is stillborn, logged, never inserted, never executed.
 
-## 5. AWS stack and the changefeed pipeline
+**Chronicler** turns the result into memory. Growth applies the trial and winds
+the 90-day disuse clock; a rollback breeds a variant at `generation+1` with a
+flat prior while the parent stays active; two siblings inside 0.15 cosine with
+both posterior means above 0.5 are replaced by one canonical child that inherits
+`min(successes)`/`max(failures)` — the most conservative reading of the evidence
+that still transfers, so a merge can never claim more competence than was
+demonstrated. Above 0.9 over ten trials a playbook is copied into the GLOBAL
+`institutional_playbooks`; below 0.2 over five it retires.
+
+No function in `agents/chronicler/app.py` writes to `evolution_log`. Each returns
+the rows it earned and one caller inserts them alongside the mutations in a
+single serializable transaction, so a lifecycle change cannot reach the database
+without its log row.
+
+## 5. The playbook lifecycle
+
+```bash
+make lifecycle              # birth → growth → failure → mutation → merge → promotion
+```
+
+`scripts/lifecycle_local.py` drives one family through every transition against
+the live cluster in a probe category of its own, asserting `evolution_log` after
+each step and deleting the probe on the way out. 36 assertions; all six event
+types written.
+
+Mutation and merge need a reasoning model, so the harness substitutes
+Chronicler's single `_generate` seam and lets the substitution show: every row it
+writes carries `proposed_by: "lifecycle-harness"`, never `"bedrock"`. The genome
+still passes the same `PlaybookDraft` validation. Without credentials the
+production path degrades honestly — `make pipeline-rollback` reports that no
+variant was bred rather than inventing one.
+
+Shadow scoring settles the two halves of a shadow record separately. The
+prediction becomes `missed` or `false_alarm`; the playbook is scored only when
+there is something real to compare it against, and never merely because the
+predicted failure failed to arrive. `success_count` is an integer and a shadow
+trial is worth 0.3, so the fraction accrues in the append-only log rather than in
+a column and banks a whole trial every 3⅓ observations.
+
+## 6. AWS stack and the changefeed pipeline
 
 ```bash
 make deploy           # sam build (container) + sam deploy — one command, whole stack
