@@ -3,25 +3,35 @@
 > Infrastructure that remembers, predicts, heals — and evolves.
 > Operational knowledge with a family tree: playbooks that are born, compete, mutate, merge, and die.
 
+**To run it: [`demo/README.md`](demo/README.md).** Fill in `DB_DSN`, then
+`make seed && make demo-run` prints a 24-check scorecard of the whole story.
+
 
 ---
 
 ## Repo layout
 
 ```
-sql/            numbered, idempotent migrations (000_regions → 004_vector_prefix_indexes)
+sql/            numbered, idempotent migrations (000_regions → 006_backtest_runs)
                 + changefeed.sql
-scripts/        migrate.py (migration runner), seed.py (builds the demo world),
-                verify_phase2.py (memory-core exit gate), smoke_test.py (schema/vector/AOST)
+scripts/        migrate.py, seed.py (builds the demo world), verify_phase2.py (memory-core
+                gate), pipeline_local.py (the five pipeline scenarios), lifecycle_local.py
+                (the whole playbook lifecycle), backtest.py (the honesty layer),
+                load_local.py (three concurrent incidents), region_demo.py (survival),
+                demo_check.py / demo_run.py (stage the demo, then grade it)
 layers/shared/  Lambda layer: nexus_common {db, bedrock, embeddings, trajectory, steps,
                 log, config} + requirements
 agents/         thin Lambda bodies: oracle, sentinel, diagnostician, guardian, chronicler,
                 receiver (changefeed webhook), poller (fallback path, disabled),
                 dashboard (read-only HTTP API behind a Function URL)
-infra/          SAM template, samconfig, Step Functions ASL (Sentinel→Diagnostician→Guardian→Chronicler)
+infra/          SAM template, samconfig, two Step Functions definitions:
+                nexus.asl.json (Sentinel→Diagnostician→Guardian→Chronicler) and
+                approved.asl.json (Guardian→Chronicler, entered after a human approves)
 generator/      synthetic world: archetypes, trajectory synthesis, seeded population and
                 genealogy, live fleet simulator + ramp control API
-tests/          unit tests for the memory core (no database required)
+tests/          unit tests for the memory core and every agent (no database required)
+demo/           README.md (how to run everything), DEMO_SCRIPT.md, JUDGE_QA.md,
+                architecture.svg, the region-kill compose file
 frontend/       dashboard (React + Vite + Tailwind + Recharts + react-flow);
                 API_CONTRACT.md is the contract with agents/dashboard
 Makefile        one-command ops (seed/verify/test/deploy/migrate/live/…)
@@ -29,19 +39,70 @@ Makefile        one-command ops (seed/verify/test/deploy/migrate/live/…)
 
 ## Status
 
+Everything below is either verified against the live three-region cluster or
+labelled with what is missing. Nothing is marked complete on the strength of the
+code alone.
+
 | Area | State |
 |---|---|
-| Multi-region schema, vector indexes, TTLs, zone configs | Complete |
-| Migration runner + schema smoke test | Complete |
-| AWS stack: layer, 7 Lambdas, EventBridge, Step Functions, S3, secrets, CloudWatch | Complete |
-| Changefeed → receiver → EventBridge → Step Functions pipeline | Complete, pending a live cluster run |
-| Synthetic world generator, embedding pipeline, seeded memory | Complete, verified against the live cluster |
-| Live fleet simulator + ramp control API | Complete |
-| Dashboard read API (7 read routes + the fleet ramp control) | Complete, verified against the live cluster |
-| Dashboard UI (5 views, live-data-backed) | Complete; see `frontend/README.md` |
-| Oracle (predict with a Beta posterior) · Sentinel (claim, Thompson-sampled competition, tiered gate) | Complete, driven end to end by `make pipeline` |
-| Guardian (execute, verify, roll back) · Diagnostician (RCA, precursor writer, playbook birth) | Complete; the Bedrock-authored paths degrade to retrieved-evidence templates without credentials |
-| Chronicler (growth, shadow scoring, mutation, merge, promotion, retirement) | Complete; verified end to end by `make lifecycle`, and the two Bedrock-authored transitions degrade rather than invent |
+| Multi-region schema, vector indexes, TTLs, zone configs | Verified live — `make verify`, 18/18 |
+| Migration runner + schema smoke test | Verified live |
+| Synthetic world generator, embedding pipeline, seeded memory | Verified live — 155 snapshots, 30 playbooks, deterministic |
+| Live fleet simulator + ramp control API | Verified live |
+| Oracle · Sentinel · Diagnostician · Guardian · Chronicler | Verified live — `make demo-run`, 24/24 |
+| Playbook lifecycle: birth, growth, shadow, mutation, merge, promotion, retirement | Verified live — `make lifecycle`, 36/36, all 8 event types |
+| Human-in-the-loop approval gate (read, decide, dispatch) | Verified live — `make pipeline-approval` |
+| Concurrency: duplicate delivery, and three simultaneous incidents | Verified live — `make pipeline-concurrency`, `make load` 7/7 |
+| Out-of-sample backtest + calibration | Verified live — `make backtest` |
+| Dashboard API (8 read routes, 2 writes) · UI (5 views) | Verified live; UI builds and lints clean |
+| Region survival **configuration** | Verified live — `make region-config`, 5/5 |
+| Region survival **demonstrated by killing a node** | Written, **not exercised** — needs Docker running |
+| Bedrock-authored genomes (birth, mutation, merge) | Written and unit-tested; **degrade rather than invent** without credentials |
+| AWS stack: layer, 8 Lambdas, EventBridge, 2 state machines, S3, secrets, CloudWatch | Complete in the repo, **never deployed** |
+| Changefeed → receiver → EventBridge → Step Functions | Complete in the repo, **never created on the cluster** |
+
+### Backtest — Oracle on windows withheld from the database
+
+`make backtest` embeds the held-out set in `demo/backtest_set.jsonl` and runs
+Oracle's own retrieval and emit gate against it. Out-of-sample: those windows were
+never written to `precursor_snapshots`. A window Oracle declines to predict on
+counts as a negative, because that is what silence means in production.
+
+| | |
+|---|---|
+| Held out | 42 windows — 30 incidents, 12 negatives |
+| Memory scored against | 155 precursor snapshots |
+| Precision · recall | **0.882** · **1.000** |
+| Confusion | TP 30 · FP 4 · FN 0 · TN 8 |
+| Category named correctly | 32 of 34 predictions |
+| Warning available | median 80 min of precursor pattern before the failure |
+| Imminence | median stated ETA 5 min on a window with 0 min left |
+
+Calibration — stated confidence against the rate that materialized:
+
+| Bucket | n | Stated | Realized | Gap |
+|---|---|---|---|---|
+| 0.60–0.70 | 6 | 0.667 | 0.500 | **−0.167** |
+| 0.70–0.80 | 4 | 0.750 | 1.000 | +0.250 |
+| 0.80–0.90 | 4 | 0.828 | 0.750 | −0.078 |
+| 0.90–1.00 | 20 | 0.938 | 1.000 | +0.062 |
+
+Read it honestly: well behaved above 0.80, and **over-confident in the 0.60–0.70
+bucket** on a small sample. Recall of 1.000 is the easiest possible case — the
+held-out incidents are complete precursor windows, and eight synthetic archetypes
+are far more separable than real telemetry. The number worth trusting is precision.
+
+### Known gaps, and why
+
+| Gap | Why |
+|---|---|
+| Region kill not exercised | The Docker daemon was not running on the build machine. `make region-config` proves the configuration; `make region-demo` proves the behaviour and is untested. |
+| Birth, mutation, merge produce nothing | No AWS credentials, so Bedrock is unreachable. They log and decline rather than fabricating a playbook. `make lifecycle` substitutes one seam and stamps `proposed_by: "lifecycle-harness"` on every row. |
+| AWS stack never deployed | `aws`, `sam` and `ccloud` are not installed here. `sam validate --lint` runs in CI. |
+| 10k-row load and TTL-reap checks | Bulk vector writes run at ~2.6 rows/s over this link and the connection drops before 1k rows. Environment-limited, not design-limited. |
+| Agent Skills | Pre-decided scope cut. The `ccloud` read-only health check remains. |
+| Unprefixed vector index removed | Oracle's neighbourhood query has no category filter by design, so it falls back to a scan and sort. Invisible at 155 snapshots; not at a million. Restoring it costs a second index on every write. |
+| Calibration in the low bucket | Real and visible. Fixing it means reweighting the prior against neighbour similarity, and that is a change worth measuring rather than guessing. |
 
 Key locked decisions: **Python 3.12** Lambdas · **AWS SAM** IaC · embedding dim
 **1024** (Titan Text Embeddings V2 default — *not* 1536) · `institutional_playbooks`
@@ -335,8 +396,9 @@ lines in CloudWatch. `make logs-receiver` tails the receiver.
 No credentials in code or git history · secrets in Secrets Manager, read at cold
 start · per-Lambda IAM, no wildcard resources · MCP read-only + audit logging ·
 ccloud service account read-only · webhook authenticated via `Bearer` shared
-secret. Schema validation of Bedrock output before any DB write is required
-before the Diagnostician writes playbooks, and is not implemented yet.
+secret. Every Bedrock proposal is validated against `nexus_common.steps.PlaybookDraft`
+before it can be written or executed: an unknown action, a missing target or a
+malformed step is logged with its payload and rejected, never inserted.
 
 ## Teardown
 
