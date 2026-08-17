@@ -68,6 +68,15 @@ pipeline-novel: ## Cold start: a pattern no playbook claims → playbook birth
 pipeline-concurrency: ## Exit gate 3: five deliveries of one prediction, one execution
 	uv run python scripts/pipeline_local.py --scenario concurrency
 
+pipeline-approval: ## HITL: an irreversible fix waits at the gate until a human answers
+	uv run python scripts/pipeline_local.py --scenario approval
+
+backtest: ## Exit gate 7: score Oracle on held-out windows and store the run
+	uv run python scripts/backtest.py
+
+backtest-dry: ## As `backtest`, printing the report without storing it
+	uv run python scripts/backtest.py --dry-run
+
 lifecycle: ## Exit gate 5: birth → growth → failure → mutation → merge → promotion
 	uv run python scripts/lifecycle_local.py
 

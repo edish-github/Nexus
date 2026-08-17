@@ -3,14 +3,15 @@
 
     make pipeline                       # the prevented-incident run
     make pipeline-rollback              # the bad-fix → rollback run
+    make pipeline-approval              # the irreversible fix a human authorizes
     python scripts/pipeline_local.py --scenario novel
     python scripts/pipeline_local.py --scenario concurrency
 
 Step Functions is not deployed on a laptop, so this script plays its part: it
 starts the synthetic fleet in-process, ramps a service, feeds the sensory tier,
-and then calls Sentinel → Diagnostician → Guardian in the same order the state
-machine does, passing each stage's output to the next. Everything else is real —
-the same agent code, the same queries, against the same cluster.
+and then calls Sentinel → Diagnostician → Guardian → Chronicler in the same order
+the state machine does, passing each stage's output to the next. Everything else
+is real — the same agent code, the same queries, against the same cluster.
 
 Scenarios
 ---------
@@ -18,6 +19,7 @@ Scenarios
 `rollback`     the deliberately-bad playbook wins, degrades the fleet, is undone
 `novel`        a pattern no playbook claims — the cold-start path
 `concurrency`  the same prediction delivered five times, one execution
+`approval`     an irreversible fix waits at the gate until a human answers
 """
 from __future__ import annotations
 
@@ -71,6 +73,22 @@ SCENARIOS = {
         "force_playbook": None,
         "deliveries": 5,
     },
+    "approval": {
+        # Deleting data has no inverse, so this playbook can never run unattended
+        # however confident Oracle is. The gate holds, a human answers through the
+        # dashboard's write endpoint, and Guardian runs on that authority rather
+        # than on the tier.
+        #
+        # `disk_full` rather than `cert_expiry`, which is the other irreversible
+        # family: a certificate failure is a cliff, so at prediction time its
+        # metric has barely moved and Guardian's verdict can only be
+        # `inconclusive` (see OUTCOME_TARGETS). Disk pressure is a creep, so the
+        # beat ends in a verdict instead of a shrug.
+        "service": "inventory",
+        "archetype": "disk_full",
+        "force_playbook": "Extend then prune",
+        "decide": "approved",
+    },
 }
 
 
@@ -80,6 +98,17 @@ def say(msg: str = "") -> None:
 
 def rule(title: str) -> None:
     say(f"\n{'─' * 72}\n{title}\n{'─' * 72}")
+
+
+class Stages:
+    """Numbered section headings that stay correct when a scenario adds a stage."""
+
+    def __init__(self) -> None:
+        self.n = 0
+
+    def __call__(self, title: str) -> None:
+        self.n += 1
+        rule(f"{self.n} · {title}")
 
 
 # --------------------------------------------------------------------------- #
@@ -280,11 +309,13 @@ def main() -> int:
     os.environ["VERIFICATION_SECONDS"] = str(args.verification_seconds)
     os.environ["VERIFICATION_POLL_SECONDS"] = "1"
 
+    stage = Stages()
     oracle = load_agent("oracle")
     sentinel = load_agent("sentinel")
     diagnostician = load_agent("diagnostician")
     guardian = load_agent("guardian")
     chronicler = load_agent("chronicler")
+    dashboard = load_agent("dashboard")
 
     rule(f"scenario: {args.scenario}  ·  {archetype} on {service}")
     fleet = LocalFleet()
@@ -295,14 +326,14 @@ def main() -> int:
     try:
         clear_open_predictions(service)
 
-        rule("1 · load ramp")
+        stage("load ramp")
         fleet.sim.start_ramp(service, archetype, speed=1.0)
         written = fleet.advance(args.ticks, service=service)
         state = fleet.sim.services[service]
         say(f"   {args.ticks} ticks · status={state.status} "
             f"progress={state.progress:.2f} · {written} telemetry windows embedded")
 
-        rule("2 · Oracle")
+        stage("Oracle")
         results = oracle.predict([service])
         outcome = results[0] if results else {}
         prediction_id = outcome.get("prediction_id")
@@ -328,7 +359,7 @@ def main() -> int:
             say(f"   retargeted at '{scenario['override_category']}' with an unseen "
                 "embedding — a pattern memory has no precedent for")
 
-        rule("3 · Sentinel")
+        stage("Sentinel")
         seed = None
         if scenario.get("force_playbook"):
             seed = pick_seed_for(prediction_id, scenario["force_playbook"], sentinel)
@@ -376,7 +407,11 @@ def main() -> int:
         if decision.get("approval_id"):
             say(f"   approval request {decision['approval_id']} awaiting a human")
 
-        rule("4 · Diagnostician")
+        if scenario.get("decide"):
+            stage("the human answers")
+            decision = human_decision(dashboard, decision, scenario["decide"], say)
+
+        stage("Diagnostician")
         diagnosis = diagnostician.diagnose(decision)
         say(f"   incident   {diagnosis.get('incident_id')}")
         say(f"   similar    {len(diagnosis.get('similar_incidents', []))} "
@@ -391,7 +426,7 @@ def main() -> int:
         report["diagnosis"] = {k: v for k, v in diagnosis.items()
                                if k != "similar_incidents"}
 
-        rule("5 · Guardian")
+        stage("Guardian")
         # Guardian's verification window reads the live fleet, so keep the
         # simulation moving underneath it while it watches.
         stop = threading.Event()
@@ -434,7 +469,7 @@ def main() -> int:
         report["guardian"] = {k: v for k, v in result.items()
                               if k not in ("verification", "substrate_health")}
 
-        rule("6 · Chronicler")
+        stage("Chronicler")
         lifecycle = chronicler.chronicle(prediction_id, result)
         say(f"   verdict    {lifecycle['verdict'] or '—'}  ({lifecycle['reason']})")
         if lifecycle["playbook_id"]:
@@ -466,6 +501,44 @@ def main() -> int:
         return 0
     finally:
         fleet.stop()
+
+
+def human_decision(dashboard, decision: dict, verdict: str, out) -> dict:
+    """Answer the approval request through the dashboard's own write endpoint.
+
+    Not a shortcut around the API — it is the API, called as a function instead of
+    over HTTP, so the decision goes through the same `FOR UPDATE` claim, writes
+    the same `evolution_log` row, and reports the same refusal on a second
+    attempt. Approving normally puts an event on the bus for the post-approval
+    state machine; with no bus configured locally the endpoint says so, and this
+    driver plays that machine's part by handing Guardian the decision itself.
+    """
+    approvals = dashboard.list_approvals({"status": "pending", "limit": 5})["approvals"]
+    mine = [a for a in approvals if a["prediction_id"] == decision["prediction_id"]]
+    if not mine:
+        out("   no approval request is open for this prediction")
+        return decision
+    approval = mine[0]
+    out(f"   request    {approval['id']}")
+    out(f"   reason     {approval['reason']}")
+    out(f"   deadline   {approval['deadline']}")
+
+    status, body = dashboard.decide_approval(approval["id"], {"decision": verdict,
+                                                             "decided_by": "pipeline-driver"})
+    out(f"   decision   {verdict} → HTTP {status}")
+    out(f"   {body.get('note', body)}")
+
+    # A second click must be refused, not applied twice.
+    again, _ = dashboard.decide_approval(approval["id"], {"decision": verdict})
+    out(f"   {'PASS' if again == 409 else 'FAIL'}: a second decision is refused "
+        f"(HTTP {again})")
+
+    if verdict != "approved":
+        return {**decision, "tier": "rejected",
+                "reason": "a human declined the remediation; it is now a shadow record"}
+    # The authority the tier gate was withholding has been supplied.
+    return {**decision, "tier": "auto",
+            "reason": f"approved by {body.get('decided_by')} — {decision['reason']}"}
 
 
 def _safe_evaluate(sentinel, prediction_id: str) -> dict:
