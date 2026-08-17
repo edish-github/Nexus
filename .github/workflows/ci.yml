@@ -1,0 +1,122 @@
+# CI: everything that can be checked without a cluster.
+#
+# The line this draws is deliberate. Lint, the unit suite, the SAM template, the
+# state-machine definitions and the frontend build all run here, because they
+# depend on nothing but the repo. The exit gates do not: `make verify`,
+# `make pipeline`, `make lifecycle`, `make backtest` and `make demo-run` all talk
+# to a live three-region CockroachDB cluster, and wiring credentials for one into
+# a public runner to prove a hackathon claim is a worse trade than running them by
+# hand and recording what happened.
+#
+# So this workflow is not the exit gate for Phase 5 or Phase 7. It is the guard
+# that keeps a refactor from breaking the code those gates run against. The gate
+# runs are in the README with their results.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      # Plain `uv sync`: the dev group holds ruff and pytest and is included by
+      # default. There are no extras to ask for.
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      # No DB_DSN is set, and that is the assertion: the unit suite must not need
+      # a cluster. A test that quietly reaches for one fails here rather than
+      # passing on a laptop that happens to have credentials in its environment.
+      - name: Unit tests
+        run: uv run pytest -q
+
+  templates:
+    name: infrastructure definitions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install cfn-lint and the SAM CLI
+        run: uv tool install cfn-lint && uv tool install aws-sam-cli
+
+      # `sam validate --lint` parses the template as SAM and then lints the
+      # CloudFormation it expands to, which is what catches a bad !GetAtt or a
+      # policy referring to a resource that does not exist.
+      - name: Validate the SAM template
+        run: uv tool run --from aws-sam-cli sam validate --lint --template infra/template.yaml
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+
+      - name: Validate the Step Functions definitions
+        run: |
+          for f in infra/statemachine/*.json; do
+            python -c "import json,sys; json.load(open(sys.argv[1]))" "$f"
+            echo "ok $f"
+          done
+
+      # The migrations are applied by scripts/migrate.py in order, so a filename
+      # that does not sort the way it is numbered would apply out of sequence.
+      - name: Check migration ordering
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          files = sorted(pathlib.Path("sql").glob("*.sql"))
+          numbered = [f for f in files if re.match(r"^\d{3}_", f.name)]
+          seen = [int(f.name[:3]) for f in numbered]
+          assert seen == sorted(seen), f"out of order: {[f.name for f in numbered]}"
+          assert len(set(seen)) == len(seen), f"duplicate prefixes: {seen}"
+          print(f"{len(numbered)} migrations, correctly ordered")
+          PY
+
+  frontend:
+    name: dashboard build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Build
+        run: npm run build
