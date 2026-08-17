@@ -68,6 +68,9 @@ pipeline-novel: ## Cold start: a pattern no playbook claims → playbook birth
 pipeline-concurrency: ## Exit gate 3: five deliveries of one prediction, one execution
 	uv run python scripts/pipeline_local.py --scenario concurrency
 
+lifecycle: ## Exit gate 5: birth → growth → failure → mutation → merge → promotion
+	uv run python scripts/lifecycle_local.py
+
 dashboard: ## Serve the dashboard read API locally on :8787 (same handler as the Lambda)
 	DB_STATEMENT_TIMEOUT_MS=$(DB_STATEMENT_TIMEOUT_MS) uv run python scripts/dashboard_local.py
 

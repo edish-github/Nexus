@@ -284,6 +284,7 @@ def main() -> int:
     sentinel = load_agent("sentinel")
     diagnostician = load_agent("diagnostician")
     guardian = load_agent("guardian")
+    chronicler = load_agent("chronicler")
 
     rule(f"scenario: {args.scenario}  ·  {archetype} on {service}")
     fleet = LocalFleet()
@@ -433,6 +434,22 @@ def main() -> int:
         report["guardian"] = {k: v for k, v in result.items()
                               if k not in ("verification", "substrate_health")}
 
+        rule("6 · Chronicler")
+        lifecycle = chronicler.chronicle(prediction_id, result)
+        say(f"   verdict    {lifecycle['verdict'] or '—'}  ({lifecycle['reason']})")
+        if lifecycle["playbook_id"]:
+            say(f"   posterior  {lifecycle['posterior_mean']} over "
+                f"{lifecycle['trials']} trials · tier {lifecycle['memory_tier']} · "
+                f"{lifecycle['status']}")
+        for kind, value in lifecycle["applied"].items():
+            if value:
+                say(f"   {kind:<10} {value}")
+        if lifecycle["verdict"] == "failure" and not lifecycle["applied"]["mutation"]:
+            say("   mutation   none — breeding a variant needs the reasoning model, "
+                "and no proposal was produced")
+        say(f"   evolution_log rows written: {lifecycle['lifecycle_events']}")
+        report["lifecycle"] = lifecycle
+
         rule("summary")
         say(json.dumps({
             "scenario": args.scenario,
@@ -443,6 +460,8 @@ def main() -> int:
             "guardian_outcome": result["outcome"],
             "rolled_back": bool(result.get("rollback")),
             "incident": result.get("incident_id"),
+            "lifecycle": {k: v for k, v in lifecycle["applied"].items() if v},
+            "posterior_after": lifecycle["posterior_mean"],
         }, indent=2))
         return 0
     finally:
