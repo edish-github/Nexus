@@ -41,10 +41,15 @@ SIMILAR_LIMIT = 5
 NOVEL_THRESHOLD = 0.80   # no incident this close means we have not seen this before
 SNAPSHOT_MAX_AGE_MINUTES = 30
 
-# `id <> %s` excludes the incident this diagnosis just created. Without it the
-# search finds its own row at similarity 1.0, every incident looks like a perfect
-# precedent, and the novel-incident path can never trigger — the cold-start
-# answer would be silently unreachable.
+# `id <> %s` excludes one incident by id. The reason it exists is that a diagnosis
+# used to insert its incident and *then* search, so the search found its own row at
+# similarity 1.0, every incident looked like a perfect precedent, and the
+# novel-incident path could never trigger — the cold-start answer was silently
+# unreachable. `diagnose` now searches before it inserts, which fixes that at the
+# root; the exclusion stays because it costs nothing and any future caller that
+# searches after writing gets the same protection instead of the same bug.
+NIL_UUID = "00000000-0000-0000-0000-000000000000"
+
 SIMILAR_INCIDENTS_SQL = """
     SELECT id::STRING, title, root_cause, severity, mttr_seconds, was_prevented,
            detected_at, 1 - (symptom_embedding <=> %s::VECTOR) AS similarity
@@ -252,13 +257,28 @@ def birth(conn, draft: PlaybookDraft, category: str, region: str,
 
 
 def diagnose(decision: dict) -> dict:
-    """Diagnostician's whole job, driven by Sentinel's decision."""
+    """Diagnostician's whole job, driven by Sentinel's decision.
+
+    Three phases, and the split is not cosmetic. Written as one transaction this
+    held a serializable transaction open across two Bedrock calls — and when
+    Bedrock is unreachable, `bedrock.claude` spends eight seconds on retries
+    before raising, all of it inside the transaction. Meanwhile the same
+    transaction had inserted into `incidents` and then run a vector scan *of
+    `incidents`*, so three concurrent diagnoses conflicted with each other by
+    construction. Two of three lost with SQLSTATE 40001 under `make load`.
+
+    So: gather and write the durable facts, close the transaction, think, then
+    write what thinking produced. The retrieval also moved *before* the insert,
+    which is a better fix for the self-match problem than excluding the row by id
+    — a row that does not exist yet cannot be its own nearest neighbour.
+    """
     prediction_id = decision["prediction_id"]
     service = decision.get("service")
     category = decision.get("outcome_category")
     had_candidates = bool(decision.get("candidates"))
 
-    def run(conn) -> dict:
+    # --- phase 1: the durable facts ---------------------------------------- #
+    def record(conn) -> dict | None:
         row = conn.execute(
             """
             SELECT current_embedding::STRING, predicted_severity, service_name,
@@ -268,11 +288,12 @@ def diagnose(decision: dict) -> dict:
             (prediction_id,),
         ).fetchone()
         if row is None:
-            return {"prediction_id": prediction_id, "skipped": "prediction no longer exists"}
+            return None
         embedding, severity, pred_service, pred_category = row
         svc = service or pred_service
         cat = category or pred_category
 
+        matches = similar_incidents(conn, embedding, NIL_UUID)
         incident_id = conn.execute(
             """
             INSERT INTO incidents
@@ -283,48 +304,59 @@ def diagnose(decision: dict) -> dict:
             """,
             (f"{cat.replace('_', ' ').title()} on {svc}", severity, svc, embedding),
         ).fetchone()[0]
-
-        matches = similar_incidents(conn, embedding, incident_id)
         snapshot = write_precursor_snapshot(conn, svc, cat, incident_id)
-        digest = (snapshot or {}).get("digest", {})
+        return {"embedding": embedding, "service": svc, "category": cat,
+                "incident_id": incident_id, "matches": matches, "snapshot": snapshot}
 
-        narrative, source = narrate(cat, svc, matches, digest)
+    facts = db.tx_retry(record)
+    if facts is None:
+        return {"prediction_id": prediction_id, "skipped": "prediction no longer exists"}
+
+    svc, cat = facts["service"], facts["category"]
+    incident_id, matches = facts["incident_id"], facts["matches"]
+    snapshot = facts["snapshot"]
+    digest = (snapshot or {}).get("digest", {})
+
+    # --- phase 2: the thinking, with no transaction held ------------------- #
+    narrative, source = narrate(cat, svc, matches, digest)
+
+    # Novel means twice over unseen: nothing in memory looks like this incident,
+    # and nothing in memory claims to fix it.
+    closest = matches[0]["similarity"] if matches else 0.0
+    novel = closest < NOVEL_THRESHOLD and not had_candidates
+    draft = propose_playbook(cat, svc, digest, matches) if novel else None
+    if novel and draft is None:
+        logger.info("novel incident but no usable proposal; no playbook born",
+                    incident_id=incident_id)
+
+    # --- phase 3: write what the thinking produced ------------------------- #
+    def commit(conn) -> str | None:
         conn.execute("UPDATE incidents SET root_cause = %s WHERE id = %s",
                      (narrative, incident_id))
+        if draft is None:
+            return None
+        return birth(conn, draft, cat, (snapshot or {}).get("region", "aws-us-east-1"),
+                     facts["embedding"], incident_id)
 
-        # Novel means twice over unseen: nothing in memory looks like this
-        # incident, and nothing in memory claims to fix it.
-        closest = matches[0]["similarity"] if matches else 0.0
-        novel = closest < NOVEL_THRESHOLD and not had_candidates
-        born = None
-        if novel:
-            draft = propose_playbook(cat, svc, digest, matches)
-            if draft is not None:
-                born = birth(conn, draft, cat, (snapshot or {}).get("region",
-                             "aws-us-east-1"), embedding, incident_id)
-            else:
-                logger.info("novel incident but no usable proposal; no playbook born",
-                            incident_id=incident_id)
+    born = db.tx_retry(commit)
 
-        logger.info("diagnosis complete", prediction_id=prediction_id,
-                    incident_id=incident_id, similar=len(matches),
-                    closest=round(closest, 4), novel=novel,
-                    narrative_source=source, playbook_born=born)
-        return {
-            "prediction_id": prediction_id,
-            "incident_id": incident_id,
-            "service": svc,
-            "outcome_category": cat,
-            "root_cause": narrative,
-            "narrative_source": source,
-            "similar_incidents": matches,
-            "closest_similarity": round(closest, 4),
-            "precursor_snapshot_id": (snapshot or {}).get("id"),
-            "novel": novel,
-            "playbook_born": born,
-        }
-
-    return db.tx_retry(run)
+    logger.info("diagnosis complete", prediction_id=prediction_id,
+                incident_id=incident_id, similar=len(matches),
+                closest=round(closest, 4), novel=novel,
+                narrative_source=source, playbook_born=born)
+    return {
+        "prediction_id": prediction_id,
+        "incident_id": incident_id,
+        "service": svc,
+        "outcome_category": cat,
+        "root_cause": narrative,
+        "narrative_source": source,
+        "similar_incidents": matches,
+        "closest_similarity": round(closest, 4),
+        "precursor_snapshot_id": (snapshot or {}).get("id"),
+        "novel": novel,
+        "playbook_born": born,
+    }
 
 
 def handler(event: dict, _context=None) -> dict:
