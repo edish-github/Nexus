@@ -64,7 +64,12 @@ Resources:
   SharedLayer:
     Type: AWS::Serverless::LayerVersion
     Metadata:
-      BuildMethod: python3.12
+      # `makefile`, not `python3.12`: that builder copies ContentUri's source tree
+      # and pip-installs into `python/`, and since our source already keeps the
+      # package at `python/nexus_common` it shipped to `/opt/python/python/` —
+      # one level below the `/opt/python` Lambda puts on sys.path. Every function
+      # deployed cleanly and died at import. See layers/shared/Makefile.
+      BuildMethod: makefile
     Properties:
       LayerName: !Sub "nexus-shared-${Environment}"
       ContentUri: ../layers/shared
@@ -253,7 +258,11 @@ Resources:
         AuthType: NONE
         Cors:
           AllowOrigins: [!Ref DashboardAllowOrigin]
-          AllowMethods: [GET, POST, OPTIONS]
+          # No OPTIONS: it is not a legal value here (GET/PUT/HEAD/POST/PATCH/
+          # DELETE/* only) and listing it fails CloudFormation's early property
+          # validation before the changeset is even created. Function URL CORS
+          # answers preflight itself, and the handler has its own OPTIONS branch.
+          AllowMethods: [GET, POST]
           AllowHeaders: [content-type]
           MaxAge: 300
       Environment:
