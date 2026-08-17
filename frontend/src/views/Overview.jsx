@@ -687,11 +687,56 @@ function BacktestPanel({ backtest, loading }) {
             </div>
           ))}
 
+          {backtest.calibration?.some((bucket) => bucket.n) ? (
+            <div className="mt-1 border-t border-nx-line pt-2.5">
+              <Label>Calibration · stated vs realized</Label>
+              <div className="mt-2 flex flex-col gap-1">
+                {backtest.calibration
+                  .filter((bucket) => bucket.n)
+                  .map((bucket) => (
+                    <div key={bucket.bucket} className="nx-num flex items-baseline gap-2 text-[10px]">
+                      <span className="w-[74px] shrink-0 text-nx-dim">{bucket.bucket}</span>
+                      <span className="w-6 shrink-0 text-nx-faint-2">n{bucket.n}</span>
+                      <span className="text-nx-muted">{fixed(bucket.stated, 2)}</span>
+                      <span className="text-nx-faint-3">→</span>
+                      <span className="text-nx-text-2">{fixed(bucket.realized, 2)}</span>
+                      <span
+                        className="ml-auto"
+                        style={{
+                          color:
+                            Math.abs(bucket.gap) < 0.1
+                              ? 'var(--color-nx-proven)'
+                              : 'var(--color-nx-experimental)',
+                        }}
+                      >
+                        {bucket.gap > 0 ? '+' : ''}
+                        {fixed(bucket.gap, 2)}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          ) : null}
+
           <p className="mt-1 border-t border-nx-line pt-2.5 text-[10.5px] leading-relaxed text-nx-faint-2">
             {backtest.false_positive} false positives, {backtest.false_negative} missed, over{' '}
             {backtest.sample_size} windows. Shown, not hidden. Method:{' '}
-            <span className="nx-num">{backtest.method}</span> against{' '}
-            <span className="nx-num">precursor_snapshots</span>, recomputed {ago(backtest.computed_at)}.
+            <span className="nx-num">{backtest.method}</span>
+            {backtest.out_of_sample === false ? (
+              <>
+                {' '}
+                — <span style={{ color: 'var(--color-nx-experimental)' }}>in-sample</span>, because
+                no stored held-out run exists yet. Run{' '}
+                <span className="nx-num">make backtest</span> for out-of-sample numbers.
+              </>
+            ) : (
+              <>
+                {' '}
+                against {num(backtest.memory_size)} remembered snapshots, using windows withheld
+                from the database entirely.
+              </>
+            )}{' '}
+            Computed {ago(backtest.computed_at)}.
           </p>
         </div>
       )}
