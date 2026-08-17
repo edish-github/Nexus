@@ -1020,17 +1020,31 @@ def get_prediction(prediction_id: str) -> dict | None:
 
 
 def replay_prediction(prediction_id: str) -> tuple[int, dict]:
-    """Re-read the decision's evidence at the prediction row's own MVCC timestamp.
+    """Re-read the decision's evidence at the instant the decision was made.
 
-    No column stores a commit timestamp, and none needs to:
-    `crdb_internal_mvcc_timestamp` is the timestamp the row was written at, and
-    it is exactly what `AS OF SYSTEM TIME` wants. The same statement then runs
-    against current state, and the two are compared row for row.
+    The timestamp comes from Oracle, which captured `cluster_logical_timestamp()`
+    inside the transaction that wrote the prediction and stored it alongside the
+    evidence. That is the only timestamp that means "decision time".
+
+    It is emphatically *not* `crdb_internal_mvcc_timestamp` on the prediction row.
+    That is the timestamp of the row's most recent version, and this row is
+    written to repeatedly after the decision: Sentinel claims it, Guardian
+    resolves it. Replaying at that timestamp would pin the read to *after* the
+    outcome was known — the precise hindsight the button exists to rule out — and
+    would then report the two panes as identical, which is how a broken proof
+    looks exactly like a working one. The MVCC timestamp is kept only as a
+    labelled fallback for a prediction with no evidence row.
+
+    The two panes are allowed to differ, and often should. Diagnostician promotes
+    the window this very prediction was about into `precursor_snapshots`, so
+    memory really has grown since. A divergence that names what was added is a
+    stronger demonstration that the pinned read is genuine time travel than a
+    match would be.
     """
     rows = _select(
         """
         SELECT id, alpha, beta, created_at,
-               crdb_internal_mvcc_timestamp::STRING AS commit_ts
+               crdb_internal_mvcc_timestamp::STRING AS row_mvcc_ts
           FROM predictions WHERE id = %s
         """,
         (prediction_id,),
@@ -1039,7 +1053,20 @@ def replay_prediction(prediction_id: str) -> tuple[int, dict]:
         return 404, {"error": "not_found", "detail": f"no prediction {prediction_id}"}
 
     row = rows[0]
-    commit_ts = str(row["commit_ts"])
+    evidence = _select(
+        """
+        SELECT details->>'commit_timestamp' AS commit_ts
+          FROM evolution_log
+         WHERE details->>'kind' = 'prediction_evidence'
+           AND details->>'prediction_id' = %s
+         ORDER BY created_at LIMIT 1
+        """,
+        (prediction_id,),
+    )
+    if evidence and evidence[0]["commit_ts"]:
+        commit_ts, source = str(evidence[0]["commit_ts"]), "oracle_evidence"
+    else:
+        commit_ts, source = str(row["row_mvcc_ts"]), "row_mvcc_fallback"
     clause = f"AS OF SYSTEM TIME '{commit_ts}'"
     try:
         pinned = _neighbors(prediction_id, as_of=f"'{commit_ts}'")
@@ -1062,6 +1089,12 @@ def replay_prediction(prediction_id: str) -> tuple[int, dict]:
     identical = [n["id"] for n in pinned] == [n["id"] for n in live] and all(
         abs(a["distance"] - b["distance"]) < 1e-9 for a, b in zip(pinned, live, strict=False)
     )
+    then, now = {n["id"] for n in pinned}, {n["id"] for n in live}
+    # What memory learned in between, named rather than summarized. A neighbour
+    # that is in the live top-k and not in the pinned one is something the system
+    # did not know when it decided.
+    added = [n for n in live if n["id"] not in then]
+    dropped = [n for n in pinned if n["id"] not in now]
 
     def stats(neighbors: list[dict]) -> dict:
         incidents = sum(1 for n in neighbors if n["led_to_incident"])
@@ -1079,11 +1112,22 @@ def replay_prediction(prediction_id: str) -> tuple[int, dict]:
     return 200, {
         "prediction_id": prediction_id,
         "commit_ts": commit_ts,
+        "commit_ts_source": source,
+        "row_mvcc_ts": str(row["row_mvcc_ts"]),
         "aost_clause": clause,
         "replayed_at": _iso(datetime.now(UTC)),
         "elapsed_since_commit_seconds": int((datetime.now(UTC) - created).total_seconds()),
         "identical": identical,
         "verdict": "BYTE-IDENTICAL" if identical else "DIVERGED",
+        "added_since": added,
+        "dropped_since": dropped,
+        "divergence_note": (
+            None if identical else
+            f"{len(added)} of the current top-{RETRIEVAL_K} neighbours did not exist when "
+            "this decision was made. The pinned pane is what the system actually saw; "
+            "the difference is what it has learned since, and the fact that the two "
+            "differ is the proof that the pinned read is a real read of the past."
+        ),
         "panes": [
             {"title": "AT DECISION TIME", "clause": clause, **stats(pinned), "rows": pinned},
             {"title": "REPLAYED NOW", "clause": "same statement, no AS OF SYSTEM TIME",

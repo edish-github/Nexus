@@ -363,7 +363,17 @@ function ReplayPanel({ replay }) {
   }
 
   const data = replay.data
-  const verdictColor = data.identical ? 'var(--color-nx-proven)' : 'var(--color-nx-failing)'
+  // Divergence is not a failure. Diagnostician promotes the very window this
+  // prediction was about into the episodic tier, so the live top-k legitimately
+  // gains a neighbour that did not exist at decision time. What would be alarming
+  // is the *posterior* moving, and that is called out separately below.
+  const posteriorHeld =
+    data.panes?.length === 2 && data.panes[0].posterior_mean === data.panes[1].posterior_mean
+  const verdictColor = data.identical
+    ? 'var(--color-nx-proven)'
+    : posteriorHeld
+      ? 'var(--color-nx-institutional)'
+      : 'var(--color-nx-failing)'
 
   return (
     <div className="border-b border-nx-line bg-nx-sunken">
@@ -441,12 +451,35 @@ function ReplayPanel({ replay }) {
         ))}
       </div>
 
-      <p className="border-t border-nx-line px-4 py-2.5 text-[10.5px] leading-relaxed text-nx-faint-2">
-        {num(data.drift?.snapshots_written_since)} snapshots have been written to the episodic tier
-        since this decision committed, {duration(data.elapsed_since_commit_seconds)} ago. The left
-        pane still reads back exactly as it did because it is pinned to the transaction&rsquo;s own
-        MVCC timestamp — <span className="nx-num">{data.commit_ts}</span> — not to current state.
-      </p>
+      <div className="border-t border-nx-line px-4 py-2.5">
+        <p className="text-[10.5px] leading-relaxed text-nx-faint-2">
+          {num(data.drift?.snapshots_written_since)} snapshots have been written to the episodic
+          tier since this decision committed, {duration(data.elapsed_since_commit_seconds)} ago.
+          The left pane is pinned to the timestamp Oracle recorded inside the transaction that
+          wrote the prediction — <span className="nx-num">{data.commit_ts}</span> — not to the
+          row&rsquo;s current version, which has since been rewritten by Sentinel&rsquo;s claim and
+          Guardian&rsquo;s outcome.
+        </p>
+        {data.added_since?.length ? (
+          <p className="mt-2 text-[10.5px] leading-relaxed text-nx-faint-2">
+            {data.added_since.length} neighbour
+            {data.added_since.length > 1 ? 's' : ''} in the live top-k did not exist then:{' '}
+            {data.added_since.map((row) => (
+              <span key={row.id} className="nx-num text-nx-muted">
+                {shortId(row.id, 13)}{' '}
+              </span>
+            ))}
+            — that divergence is the proof the left pane is a real read of the past rather than the
+            same query run twice.{' '}
+            {posteriorHeld ? (
+              <span style={{ color: 'var(--color-nx-proven)' }}>
+                The posterior is unchanged regardless: the conclusion did not depend on what came
+                after it.
+              </span>
+            ) : null}
+          </p>
+        ) : null}
+      </div>
     </div>
   )
 }
