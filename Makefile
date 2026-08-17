@@ -71,6 +71,27 @@ pipeline-concurrency: ## Exit gate 3: five deliveries of one prediction, one exe
 pipeline-approval: ## HITL: an irreversible fix waits at the gate until a human answers
 	uv run python scripts/pipeline_local.py --scenario approval
 
+demo-check: ## Are the five staged beats still stageable? Run before every rehearsal
+	uv run python scripts/demo_check.py
+
+demo-run: ## Exit gate 7: the whole three-moment story, headless and checked
+	uv run python scripts/demo_run.py
+
+demo-run-3: ## As `demo-run`, three times — the gate is 3/3 clean
+	uv run python scripts/demo_run.py --repeat 3
+
+region-config: ## Read the survival configuration off the Cloud cluster (harms nothing)
+	uv run python scripts/region_demo.py --cloud
+
+region-up: ## Start the local three-region cluster the region kill is performed on
+	uv run python scripts/region_demo.py --up
+
+region-demo: ## Exit gate 6: kill a region mid-transaction; the transaction commits
+	uv run python scripts/region_demo.py --local
+
+region-down: ## Tear down the local three-region cluster
+	uv run python scripts/region_demo.py --down
+
 backtest: ## Exit gate 7: score Oracle on held-out windows and store the run
 	uv run python scripts/backtest.py
 
