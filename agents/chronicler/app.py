@@ -441,15 +441,25 @@ def sweep(conn, now: datetime) -> dict:
 
     # Only predictions with no approval outstanding: one waiting on a human is
     # not abandoned, it is waiting, and the deadline above is what bounds that.
+    #
+    # `created_at < cutoff` is redundant with the coalesce and is there anyway:
+    # `claimed_at` is never earlier than `created_at`, so it narrows nothing
+    # semantically, but it lets the sweep seek on `predictions(prevention_status,
+    # created_at)` instead of scanning every open prediction. Under three
+    # concurrent pipelines that scan is the difference between housekeeping and a
+    # contention hotspot — it conflicts with the very rows the other pipelines are
+    # in the middle of claiming.
+    cutoff = now - timedelta(minutes=STALE_PREVENTING_MINUTES)
     abandoned = conn.execute(
         """
         UPDATE predictions SET prevention_status = 'missed', resolved_at = now()
         WHERE prevention_status = 'preventing'
+          AND created_at < %s
           AND coalesce(claimed_at, created_at) < %s
           AND id NOT IN (SELECT prediction_id FROM approvals WHERE status = 'pending')
         RETURNING id::STRING, service_name
         """,
-        (now - timedelta(minutes=STALE_PREVENTING_MINUTES),),
+        (cutoff, cutoff),
     ).fetchall()
 
     if expired or abandoned:
@@ -902,6 +912,13 @@ def chronicle(prediction_id: str | None, outcome: dict | None = None) -> dict:
     context = db.tx_retry(lambda conn: _read_context(conn, prediction_id, outcome))
     playbook = context.get("playbook")
 
+    # The sweep gets its own transaction, deliberately. It is housekeeping over
+    # rows this invocation has no interest in, and folding it into the lifecycle
+    # write below made every retry re-do the whole lifecycle — three concurrent
+    # pipelines then contended on a span none of them cared about and two of the
+    # three lost. Separate transactions mean a sweep conflict costs a sweep.
+    swept = db.tx_retry(lambda conn: sweep(conn, now))
+
     # --- the proposals, outside any transaction ---------------------------- #
     variant: tuple[PlaybookDraft | None, str] = (None, "not attempted")
     if playbook and context["verdict"] == "failure":
@@ -926,8 +943,6 @@ def chronicle(prediction_id: str | None, outcome: dict | None = None) -> dict:
             "growth": None, "mutation": None, "merge": None,
             "promotion": None, "retirement": None,
         }
-        swept = sweep(conn, now)
-
         current = load_playbook(conn, playbook["id"]) if playbook else None
         if current and context["verdict"]:
             events.append(grow(conn, current, context["verdict"],
@@ -971,8 +986,7 @@ def chronicle(prediction_id: str | None, outcome: dict | None = None) -> dict:
                 applied["retirement"] = current["id"]
 
         _record(conn, events)
-        return {"events": events, "applied": applied, "swept": swept,
-                "playbook": current or playbook}
+        return {"events": events, "applied": applied, "playbook": current or playbook}
 
     result = db.tx_retry(apply)
     events = result["events"]
@@ -995,7 +1009,7 @@ def chronicle(prediction_id: str | None, outcome: dict | None = None) -> dict:
         "memory_tier": (final or {}).get("memory_tier"),
         "status": (final or {}).get("status"),
         "applied": result["applied"],
-        "swept": result["swept"],
+        "swept": swept,
         "lifecycle_events": len(events),
         "events": [
             {"event_type": e.event_type, "playbook_id": e.playbook_id,
