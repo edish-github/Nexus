@@ -34,6 +34,11 @@ def diagnostician() -> ModuleType:
     return load_agent("diagnostician")
 
 
+@pytest.fixture(scope="session")
+def chronicler() -> ModuleType:
+    return load_agent("chronicler")
+
+
 @pytest.fixture(autouse=True)
 def _no_metrics(monkeypatch):
     """Metrics are best-effort in production and pure noise in tests."""
