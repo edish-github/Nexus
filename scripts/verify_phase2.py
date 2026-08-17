@@ -47,6 +47,7 @@ from generator import archetypes  # noqa: E402
 from nexus_common import config, embeddings  # noqa: E402
 
 K = 14  # Oracle's k, from the plan
+GC_SECONDS = 604800  # the 7-day MVCC window sql/002 configures for the replay
 LOAD_CHUNK = 500  # rows per committed COPY during the load check
 TAG = "verify-phase2"
 BACKTEST_PATH = REPO_ROOT / "demo" / "backtest_set.jsonl"
@@ -270,6 +271,30 @@ def check_provenance(conn, probe: str) -> None:
     changed = _digest(evidence_now) != digest_then
     check("mutating the evidence table changes the present-tense answer", changed,
           "3 nearer snapshots inserted")
+
+    # The GC window the replay depends on, asserted *after* the transaction above.
+    # A replay run seconds after its decision succeeds at any GC threshold, so the
+    # check passing above is no evidence the window is what the schema says:
+    # `precursor_snapshots` was found inheriting 4500s (75 minutes) instead of the
+    # configured 604800 after a manual TRUNCATE recreated the table and discarded
+    # its zone config, and nothing here caught it.
+    #
+    # It reads zone configuration, which touches system tables and refreshes
+    # descriptor leases. Placed *before* the transaction above, that reliably
+    # pushed its read timestamp and made it fail with RETRY_SERIALIZABLE 3 runs out
+    # of 3. Order matters here; leave it after the commit.
+    for table in ("precursor_snapshots", "predictions"):
+        raw = conn.execute(
+            f"SELECT raw_config_sql FROM [SHOW ZONE CONFIGURATION FOR TABLE {table}]"
+        ).fetchone()
+        setting = next((line.strip().rstrip(",") for line in (raw[0] or "").splitlines()
+                        if "gc.ttlseconds" in line), None)
+        seconds = int(setting.split("=")[1]) if setting else None
+        ok = seconds == GC_SECONDS
+        check(f"{table} retains a 7-day MVCC window for replay", ok,
+              f"gc.ttlseconds = {seconds}" if ok else
+              f"gc.ttlseconds = {seconds if seconds is not None else 'inherited (unset)'}, "
+              f"expected {GC_SECONDS} — re-apply sql/002_zone_configs.sql")
 
     replayed = conn.execute(
         EVIDENCE_SQL.replace("{AOST}", f"AS OF SYSTEM TIME {commit_ts}"), params

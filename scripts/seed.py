@@ -107,6 +107,31 @@ def wipe(conn: psycopg.Connection) -> None:
         run_in_tx(conn, _wipe_table)
 
 
+def reassert_zone_configs(conn: psycopg.Connection) -> None:
+    """Re-apply `sql/002`'s GC windows, because they are silently destructible.
+
+    The 7-day `gc.ttlseconds` on `precursor_snapshots` and `predictions` is what
+    makes the provenance replay resolve at a decision's commit timestamp rather
+    than failing on the GC threshold. Nothing in this repo truncates — `wipe()`
+    uses `DELETE`, which preserves zone configs — but `TRUNCATE` recreates a table
+    under a new ID and discards its zone config, and one typed at a prompt during
+    load-test debugging is exactly how `precursor_snapshots` came to be inheriting
+    75 minutes while everything appeared to work. The replay only ever runs seconds
+    after the decision, so a 75-minute window and a 7-day one look identical right
+    up until a judge asks about yesterday.
+
+    So the reset re-asserts them rather than assuming they survived. The statements
+    are read from the migration instead of being restated here, so there is one
+    source of truth for the number.
+    """
+    path = REPO_ROOT / "sql" / "002_zone_configs.sql"
+    statements = [s.strip() for s in path.read_text().split(";") if s.strip()
+                  and not s.strip().startswith("--")]
+    for statement in statements:
+        run_in_tx(conn, lambda c, s=statement: c.execute(s))
+    log(f"   zone configs re-asserted from {path.name} ({len(statements)} statement(s))")
+
+
 def embed_all(texts: list[str], label: str) -> list[list[float]]:
     started = time.perf_counter()
     out = []
@@ -508,6 +533,7 @@ def main() -> int:
     started = time.perf_counter()
     with psycopg.connect(dsn, autocommit=True) as conn:
         wipe(conn)
+        reassert_zone_configs(conn)
         log("writing the world")
         incident_ids = seed_incidents(conn, w, vectors_by_key)
         n_precursors = seed_precursors(conn, w, vectors_by_key, incident_ids)
