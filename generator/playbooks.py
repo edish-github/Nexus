@@ -350,14 +350,22 @@ SPECS: tuple[PlaybookSpec, ...] = (
     PlaybookSpec(
         "deploy-gen2-scaleout", "Scale out under regression",
         "bad_deploy_latency_regression", 2, "deploy-gen1-rollback",
-        deploy_scaleout_program(), successes=1, failures=6, spread=0.20,
+        deploy_scaleout_program(), successes=2, failures=5, spread=0.20,
         born_days_ago=48, rollbacks=4,
-        note="The bad fix. Posterior mean 0.22 — above the 0.2 retirement line, so "
-             "Thompson sampling still hands it the occasional turn. It fails, Guardian "
-             "rolls it back, and Chronicler mutates it. That is demo Moment 3. "
+        note="The bad fix. Posterior mean 0.333 — comfortably above the 0.2 retirement "
+             "line, so Thompson sampling still hands it the occasional turn. It fails, "
+             "Guardian rolls it back, and Chronicler mutates it. That is demo Moment 3. "
              "Its spread is deliberately tight: a wrong playbook is only dangerous if "
              "it looks applicable, and one parked outside Sentinel's retrieval radius "
-             "would never be retrieved and so could never lose on camera.",
+             "would never be retrieved and so could never lose on camera. "
+             "These exact counters are load-bearing and were measured, not guessed. Two "
+             "things pull against each other: retirement headroom wants more failures, "
+             "and being *selectable at all* wants a wide posterior — and trials narrow a "
+             "Beta. At 1/6 the mean was 0.222 with one failure of headroom, so three "
+             "rehearsals retired it and the demo silently lost its best beat. Raising it "
+             "to 3/10 bought headroom and tightened the posterior until it won one draw "
+             "in a hundred thousand — worse, not better. 2/5 is the corner: six failures "
+             "of headroom, and it takes a competition roughly one time in 1,600.",
     ),
     PlaybookSpec(
         "deploy-gen2-pin", "Roll back and pin", "bad_deploy_latency_regression", 2,

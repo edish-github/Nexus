@@ -29,6 +29,7 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from _env import bootstrap, require_dsn
 
@@ -44,7 +45,14 @@ from nexus_common import db, posterior  # noqa: E402
 # A weak playbook winning is rare by design — that is selection working. The
 # driver searches for the seed on which it happens rather than re-running the
 # whole pipeline until it does; the draw itself is untouched.
-SEED_SEARCH = 40000
+#
+# 400k rather than 40k because the target gets rarer with use. Every rollback run
+# costs the bad playbook one more failure, which lowers its mean *and* narrows its
+# Beta, so the draw it needs to win gets less likely each rehearsal — at 2/5 it
+# takes a competition about one time in 1,600, and by 2/8 roughly one seed in
+# 40,000 works. The whole scan costs about three seconds; running out of seeds
+# costs a demo beat.
+SEED_SEARCH = 400_000
 
 SCENARIOS = {
     "prevented": {
@@ -216,11 +224,22 @@ def pick_seed_for(prediction_id: str, playbook_name: str, sentinel) -> int | Non
     candidates = db.tx_retry(read)
     if not candidates:
         return None
+    found, hits = None, 0
     for seed in range(SEED_SEARCH):
         winner, _ = posterior.compete(candidates, np.random.default_rng(seed))
         if winner.candidate.name == playbook_name:
-            return seed
-    return None
+            hits += 1
+            if found is None:
+                found = seed
+    # Reported so a failure to find one is legible: it means the target has been
+    # rehearsed down to a posterior that can no longer win, not that the code broke.
+    if found is None:
+        say(f"   no winning draw in {SEED_SEARCH:,} — '{playbook_name}' has been "
+            "rehearsed below the point where it can win. Run `make demo-reset`.")
+    else:
+        say(f"   '{playbook_name}' wins {hits:,} of {SEED_SEARCH:,} draws "
+            f"(about 1 in {SEED_SEARCH // max(hits, 1):,})")
+    return found
 
 
 def retarget_as_novel(prediction_id: str, category: str) -> None:
@@ -299,6 +318,9 @@ def main() -> int:
     parser.add_argument("--verification-seconds", type=float, default=6.0,
                         help="Guardian's verification window; short, because the "
                              "driver advances the fleet itself")
+    parser.add_argument("--report", type=Path,
+                        help="write the run's full result as JSON, for a caller that "
+                             "orchestrates several runs (see scripts/demo_run.py)")
     args = parser.parse_args()
     scenario = SCENARIOS[args.scenario]
     service, archetype = scenario["service"], scenario["archetype"]
@@ -362,11 +384,10 @@ def main() -> int:
         stage("Sentinel")
         seed = None
         if scenario.get("force_playbook"):
+            say(f"   seeking a draw won by '{scenario['force_playbook']}'")
             seed = pick_seed_for(prediction_id, scenario["force_playbook"], sentinel)
-            say(f"   seeking a draw won by '{scenario['force_playbook']}': "
-                + (f"seed {seed}" if seed is not None
-                   else f"not found in {SEED_SEARCH} draws — it is a weak playbook, "
-                        "which is the point"))
+            if seed is not None:
+                say(f"   using seed {seed} — the draw is real, only the moment is chosen")
 
         if args.scenario == "concurrency":
             deliveries = scenario["deliveries"]
@@ -501,6 +522,8 @@ def main() -> int:
         return 0
     finally:
         fleet.stop()
+        if args.report:
+            args.report.write_text(json.dumps(report, indent=2, default=str))
 
 
 def human_decision(dashboard, decision: dict, verdict: str, out) -> dict:
