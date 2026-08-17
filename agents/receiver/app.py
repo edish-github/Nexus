@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 import boto3
+
 from nexus_common import config, log
 
 logger = log.get_logger("receiver")
