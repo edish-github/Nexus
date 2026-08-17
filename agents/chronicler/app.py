@@ -14,6 +14,11 @@ Six transitions, applied in this order:
     promotion   proven memory is copied into the GLOBAL institutional table
     retirement  memory that has been given enough chances and failed steps aside
 
+It also sweeps. A prediction stuck in `preventing` holds Oracle's dedup guard, so
+an execution that died mid-flight would silently make that failure unpredictable
+forever; `sweep` is what stops that, and a scheduled `{"sweep": true}` invocation
+runs it on days when no prediction fires at all.
+
 **Fitness is never stored.** Every threshold below is compared against
 `Beta(success_count + 1, failure_count + 1)`'s mean, derived from the counters at
 read time. There is no float to drift.
@@ -70,6 +75,11 @@ DISUSE_DAYS = 90
 # many are settled per invocation.
 SHADOW_GRACE_MINUTES = float(os.environ.get("SHADOW_GRACE_MINUTES", "15"))
 SHADOW_SWEEP_LIMIT = 20
+
+# How long a prediction may sit in `preventing` before it is presumed abandoned.
+# Generous on purpose: Guardian's verification window plus a Lambda timeout plus
+# Step Functions' retries, and then some.
+STALE_PREVENTING_MINUTES = float(os.environ.get("STALE_PREVENTING_MINUTES", "30"))
 
 MUTATION_SYSTEM = """You are the evolutionary memory of an autonomous \
 incident-response system. A playbook was executed against a live incident, made \
@@ -390,6 +400,69 @@ def settle_shadows(conn, now: datetime) -> list[Lifecycle]:
                     playbook_id=shadow["playbook_id"], verdict=verdict,
                     incident_id=incident["id"])
     return events
+
+
+# --------------------------------------------------------------------------- #
+# The stale sweep
+# --------------------------------------------------------------------------- #
+
+def sweep(conn, now: datetime) -> dict:
+    """Un-wedge anything the pipeline left holding a lock it no longer deserves.
+
+    Two things can leave a prediction sitting in `preventing` forever: an
+    approval request nobody answered, and a pipeline execution that died between
+    Sentinel's claim and Guardian's close-out. Neither is hypothetical — a Lambda
+    timeout produces the second one — and a prediction stuck in `preventing`
+    holds Oracle's dedup guard, so the same failure can never be predicted again.
+    That is a silent, permanent blind spot, which is worse than the crash.
+
+    An unanswered approval expires into a **shadow** record rather than a miss.
+    Nobody said no; nobody said anything. The playbook stays attached and
+    unexecuted, which is exactly what shadow means, and the eventual outcome
+    scores the choice.
+
+    An abandoned execution becomes a **miss**, because something was supposed to
+    act and nothing did.
+    """
+    expired = conn.execute(
+        """
+        UPDATE approvals SET status = 'expired'
+        WHERE status = 'pending' AND deadline < %s
+        RETURNING id::STRING, prediction_id::STRING
+        """,
+        (now,),
+    ).fetchall()
+    for _, prediction_id in expired:
+        conn.execute(
+            "UPDATE predictions SET prevention_status = 'shadowed' "
+            "WHERE id = %s AND prevention_status = 'preventing'",
+            (prediction_id,),
+        )
+
+    # Only predictions with no approval outstanding: one waiting on a human is
+    # not abandoned, it is waiting, and the deadline above is what bounds that.
+    abandoned = conn.execute(
+        """
+        UPDATE predictions SET prevention_status = 'missed', resolved_at = now()
+        WHERE prevention_status = 'preventing'
+          AND coalesce(claimed_at, created_at) < %s
+          AND id NOT IN (SELECT prediction_id FROM approvals WHERE status = 'pending')
+        RETURNING id::STRING, service_name
+        """,
+        (now - timedelta(minutes=STALE_PREVENTING_MINUTES),),
+    ).fetchall()
+
+    if expired or abandoned:
+        logger.info("stale sweep", approvals_expired=len(expired),
+                    predictions_abandoned=len(abandoned),
+                    stale_after_minutes=STALE_PREVENTING_MINUTES)
+    for name, count in (("approvals_expired", len(expired)),
+                        ("predictions_abandoned", len(abandoned))):
+        metrics.put(name, count)
+    return {
+        "approvals_expired": [a[0] for a in expired],
+        "predictions_abandoned": [p[0] for p in abandoned],
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -853,6 +926,7 @@ def chronicle(prediction_id: str | None, outcome: dict | None = None) -> dict:
             "growth": None, "mutation": None, "merge": None,
             "promotion": None, "retirement": None,
         }
+        swept = sweep(conn, now)
 
         current = load_playbook(conn, playbook["id"]) if playbook else None
         if current and context["verdict"]:
@@ -897,7 +971,7 @@ def chronicle(prediction_id: str | None, outcome: dict | None = None) -> dict:
                 applied["retirement"] = current["id"]
 
         _record(conn, events)
-        return {"events": events, "applied": applied,
+        return {"events": events, "applied": applied, "swept": swept,
                 "playbook": current or playbook}
 
     result = db.tx_retry(apply)
@@ -921,6 +995,7 @@ def chronicle(prediction_id: str | None, outcome: dict | None = None) -> dict:
         "memory_tier": (final or {}).get("memory_tier"),
         "status": (final or {}).get("status"),
         "applied": result["applied"],
+        "swept": result["swept"],
         "lifecycle_events": len(events),
         "events": [
             {"event_type": e.event_type, "playbook_id": e.playbook_id,
@@ -933,8 +1008,15 @@ def chronicle(prediction_id: str | None, outcome: dict | None = None) -> dict:
 
 
 def handler(event: dict, _context=None) -> dict:
-    # Step Functions hands Chronicler whatever Guardian returned, including on
-    # the rollback path; the local runner and the tests pass the same shape.
+    # Two ways in. A scheduled `{"sweep": true}` runs the stale sweep alone, so
+    # nothing stays wedged on a day when no prediction fires. Otherwise Step
+    # Functions hands Chronicler whatever Guardian returned, including on the
+    # rollback path; the local runner and the tests pass the same shape.
+    if event.get("sweep"):
+        swept = db.tx_retry(lambda conn: sweep(conn, datetime.now(UTC)))
+        logger.info("scheduled sweep complete", **{k: len(v) for k, v in swept.items()})
+        return {"agent": "chronicler", "mode": "sweep", "swept": swept}
+
     outcome = event.get("guardian") or event
     prediction_id = outcome.get("prediction_id") or event.get("prediction_id") or (
         event.get("detail", {}).get("prediction", {}).get("id"))
