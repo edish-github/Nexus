@@ -11,7 +11,14 @@ parallel = true
 [default.deploy.parameters]
 capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 confirm_changeset = false
-resolve_s3 = true
+# The artifact bucket is named rather than resolved. `resolve_s3 = true` makes SAM
+# create and update a *second* CloudFormation stack (`aws-sam-cli-managed-default`)
+# to own the bucket, which means the deploy credential needs CloudFormation write on
+# a stack that has nothing to do with this project. The bucket already exists, so
+# naming it keeps the deploy identity scoped to `stack/nexus/*` — the whole point of
+# using a least-privilege user rather than root keys.
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-bmqfgwjidu51"
+s3_prefix = "nexus"
 fail_on_empty_changeset = false
 parameter_overrides = "Environment=development"
 
