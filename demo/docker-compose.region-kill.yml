@@ -1,0 +1,92 @@
+# A three-node CockroachDB cluster, one node per simulated region, used for
+# exactly one thing: pulling the plug on a region while a transaction is open.
+#
+# Why not the Cloud cluster. NEXUS runs on CockroachDB Cloud with three real
+# regions and `SURVIVE REGION FAILURE`, and that is where every other beat is
+# demonstrated. But a managed cluster does not offer "stop these nodes now" as an
+# operation, and a survival claim nobody can watch fail is not a demonstration.
+# So this cluster exists to be broken on camera. Same engine, same Raft, same
+# consistency guarantees — self-hosted so the plug is reachable.
+#
+# What this proves and what it does not. Each node advertises a distinct
+# `region` locality, so the replicas of every range are spread one per region and
+# a quorum survives losing any single one. That is the mechanism behind the Cloud
+# cluster's survival goal, and it is what the demo shows. It does not exercise
+# the multi-region SQL surface — `REGIONAL BY ROW`, `LOCALITY GLOBAL`, the
+# survival goal itself — which is CCL-licensed and configured on the Cloud
+# cluster; `scripts/region_demo.py --cloud` reads that configuration off the real
+# cluster instead of restating it here.
+#
+#   make region-up        bring the cluster up and initialize it
+#   make region-demo      the survival proof: open a txn, kill a region, commit
+#   make region-down      tear it down
+
+name: nexus-region-kill
+
+x-node: &node
+  image: cockroachdb/cockroach:v25.3.0
+  # Insecure on purpose: this cluster holds a handful of throwaway rows for the
+  # length of a rehearsal and is never reachable from anywhere but this machine.
+  command: >
+    start
+    --insecure
+    --join=nexus-region-a:26357,nexus-region-b:26357,nexus-region-c:26357
+    --listen-addr=:26357
+    --advertise-addr=$${HOSTNAME}:26357
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+
+services:
+  nexus-region-a:
+    <<: *node
+    hostname: nexus-region-a
+    container_name: nexus-region-a
+    command: >
+      start
+      --insecure
+      --join=nexus-region-a:26357,nexus-region-b:26357,nexus-region-c:26357
+      --listen-addr=:26357
+      --advertise-addr=nexus-region-a:26357
+      --sql-addr=:26257
+      --http-addr=:8080
+      --locality=region=aws-us-east-1,zone=a
+    ports:
+      - "26257:26257"
+      - "8080:8080"
+
+  nexus-region-b:
+    <<: *node
+    hostname: nexus-region-b
+    container_name: nexus-region-b
+    command: >
+      start
+      --insecure
+      --join=nexus-region-a:26357,nexus-region-b:26357,nexus-region-c:26357
+      --listen-addr=:26357
+      --advertise-addr=nexus-region-b:26357
+      --sql-addr=:26257
+      --http-addr=:8080
+      --locality=region=aws-eu-west-1,zone=a
+    ports:
+      - "26258:26257"
+      - "8081:8080"
+
+  nexus-region-c:
+    <<: *node
+    hostname: nexus-region-c
+    container_name: nexus-region-c
+    command: >
+      start
+      --insecure
+      --join=nexus-region-a:26357,nexus-region-b:26357,nexus-region-c:26357
+      --listen-addr=:26357
+      --advertise-addr=nexus-region-c:26357
+      --sql-addr=:26257
+      --http-addr=:8080
+      --locality=region=aws-ap-south-1,zone=a
+    ports:
+      - "26259:26257"
+      - "8082:8080"
