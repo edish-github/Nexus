@@ -12,8 +12,16 @@ Parameters:
     AllowedValues: [development, staging, production]
   BedrockModelId:
     Type: String
-    Default: anthropic.claude-opus-5
-    Description: Claude model id (Bedrock) for reasoning, mutation, and merge.
+    # The `us.` prefix is an inference profile, not decoration. This model reports
+    # `inferenceTypesSupported: [INFERENCE_PROFILE]`, so invoking the bare id
+    # `anthropic.claude-opus-5` is rejected outright with
+    # `ValidationException: Operation not allowed` — which looks identical to a
+    # missing model-access grant and wastes an afternoon.
+    Default: us.anthropic.claude-opus-5
+    Description: >-
+      Claude inference-profile id (Bedrock) for reasoning, mutation, and merge.
+      Must be the us.* profile form; bare foundation-model ids are not invocable
+      for this model.
   GeneratorUrl:
     Type: String
     Default: ""
