@@ -375,3 +375,46 @@ def test_retirement_does_not_shorten_the_disuse_ttl(chronicler):
 def test_an_already_retired_playbook_is_not_retired_again(chronicler):
     assert chronicler.retire(FakeConn(), playbook(success_count=1, failure_count=9,
                              status="retired"), incident_id=None) is None
+
+
+# -- the stale sweep -------------------------------------------------------- #
+
+def test_an_unanswered_approval_expires_into_a_shadow_record(chronicler):
+    """Nobody said no; nobody said anything. That is what shadow means."""
+    from datetime import UTC, datetime
+
+    conn = FakeConn([[("appr-1", "pred-1")], [], []])
+    swept = chronicler.sweep(conn, datetime.now(UTC))
+    assert swept["approvals_expired"] == ["appr-1"]
+    assert conn.said("SET status = 'expired'")
+    assert conn.said("prevention_status = 'shadowed'")
+
+
+def test_an_abandoned_execution_is_released_as_a_miss(chronicler):
+    """A prediction stuck in `preventing` holds Oracle's dedup guard forever."""
+    from datetime import UTC, datetime
+
+    conn = FakeConn([[], [("pred-2", "payments")]])
+    swept = chronicler.sweep(conn, datetime.now(UTC))
+    assert swept["predictions_abandoned"] == ["pred-2"]
+    sql, _ = conn.statements[1]
+    assert "prevention_status = 'missed'" in sql
+
+
+def test_a_prediction_waiting_on_a_human_is_not_abandoned(chronicler):
+    """Waiting is not the same as abandoned; the deadline is what bounds waiting."""
+    from datetime import UTC, datetime
+
+    conn = FakeConn([[], []])
+    chronicler.sweep(conn, datetime.now(UTC))
+    sql, _ = conn.statements[1]
+    assert "NOT IN (SELECT prediction_id FROM approvals WHERE status = 'pending')" in sql
+
+
+def test_a_quiet_sweep_writes_nothing(chronicler):
+    from datetime import UTC, datetime
+
+    conn = FakeConn([[], []])
+    swept = chronicler.sweep(conn, datetime.now(UTC))
+    assert swept == {"approvals_expired": [], "predictions_abandoned": []}
+    assert len(conn.statements) == 2, "two statements, no follow-up writes"
