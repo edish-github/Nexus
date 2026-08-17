@@ -28,14 +28,21 @@ vectors written by one are meaningless to the other.
 
 ```bash
 make seed                    # migrate, then build the whole demo world
-make verify                  # 18 checks against the live cluster
+make verify                  # 21 checks against the live cluster
 make demo-check              # are the five staged demo beats stageable?
 make backtest                # score Oracle on withheld windows, store the run
 ```
 
-`make seed` is idempotent and destructive in the right way: it truncates and
+`make seed` is idempotent and destructive in the right way: it `DELETE`s and
 rebuilds, so it is also `make demo-reset`. Expect ~220s, almost all of it writing
 1024-dimension vectors across three regions.
+
+It uses `DELETE` rather than `TRUNCATE` deliberately, and re-asserts
+`sql/002_zone_configs.sql` afterwards. `TRUNCATE` recreates a table under a new ID and
+**discards its zone config**, which is how `precursor_snapshots` once ended up
+inheriting a 75-minute GC window instead of the configured 7 days — the provenance
+replay kept working, because a replay runs seconds after its decision, and nothing
+noticed for days. `make verify` now asserts the window on both tables.
 
 ---
 
@@ -124,19 +131,62 @@ Docker Desktop and run it; if it fails, the failure is in these scripts, and
 
 ## 5 · Deploy to AWS
 
-Complete in the repo, never deployed — `aws`, `sam` and `ccloud` are not installed
-on the build machine and the CloudFormation stack has never been created. In order:
+**Deployed and verified 18 Aug 2026** — stack `nexus` in `us-east-1`, exit gate 1
+closed end to end: `INSERT` → changefeed → receiver → `nexus-bus` → Step Functions
+`SUCCEEDED` across Sentinel → Diagnostician → Guardian → Chronicler.
 
 ```bash
 make secrets                 # prints what to put in Secrets Manager
 make deploy                  # sam build (container) + sam deploy, one command
 make outputs                 # receiver Function URL, bus name, state machine ARNs, bucket
-# paste the receiver URL and shared secret into sql/changefeed.sql, then:
 make changefeed              # create the changefeed on `predictions`
 ```
 
-Set `GeneratorUrl` on the stack to wherever the fleet simulator runs, or Guardian
-will refuse to act rather than report a fix that never ran.
+Two things about the deployed stack that are not obvious:
+
+**Guardian cannot act in the cloud, on purpose.** The fleet is a local simulator with
+no public URL, so `GeneratorUrl` is unset and Guardian reports `no_substrate` rather
+than claiming a fix it never ran. Exposing the laptop through a tunnel would make the
+beat "work" and make the claim worse.
+
+**The DSN in Secrets Manager is not the DSN in `.env`.** libpq with
+`sslmode=verify-full` and no `sslrootcert` looks for `~/.postgresql/root.crt`, which
+cannot exist in Lambda, and `sslrootcert=system` fails too because psycopg's manylinux
+wheel bundles an OpenSSL whose compiled-in CA path is absent from the Lambda
+filesystem. The cluster presents an ordinary Let's Encrypt chain, so the stored DSN
+ends with `sslrootcert=/etc/pki/tls/certs/ca-bundle.crt` — Amazon Linux's own bundle.
+Keep that parameter when you rotate the DSN or every function will fail to connect.
+
+### Rotating a secret — cycling the functions is part of the rotation, not a note
+
+`config.get_secret` is `@functools.cache`d and the connection pool is a module global,
+so a warm execution environment keeps serving the **old** value forever. Writing a new
+secret version has no effect on its own. Rotation is two steps:
+
+```bash
+# 1. write the new value
+aws secretsmanager put-secret-value --secret-id nexus/db --secret-string '{"dsn":"…"}'
+
+# 2. REQUIRED: replace every execution environment, or step 1 did nothing.
+#    Updating *any* configuration property does it; --description is the safe one.
+for f in oracle sentinel diagnostician guardian chronicler receiver poller dashboard; do
+  aws lambda update-function-configuration \
+    --function-name "nexus-$f-development" \
+    --description "secret rotated $(date -u +%FT%TZ)" >/dev/null
+done
+```
+
+**Do not** cycle them with `--environment "Variables={SECRET_REVISION=…}"`. That flag
+*replaces* the whole variable map rather than merging into it, so it would silently
+delete `GENERATOR_URL`, `EVENT_BUS_NAME`, `ARTIFACTS_BUCKET` and everything else the
+template set — and the functions would then fail for a reason with no connection to the
+rotation you were doing. `--description` changes configuration without touching
+variables, which is all that is needed to get new environments.
+
+**All eight functions**, because the layer is shared and any of them may hold a stale
+pool. Skipping step 2 produces the worst kind of failure: the old credential keeps
+working until the container ages out, so it looks fine and then breaks hours later with
+no deploy to blame.
 
 ---
 
