@@ -45,7 +45,15 @@ VITALS_JITTER = 0.012
 
 # How much one remediation step moves the trajectory, as a multiple of the
 # per-tick drift. Above 1.0 in total, the drift reverses.
-EFFECTIVE_RELIEF = 0.6
+#
+# 0.8 rather than something smaller because two matching steps must be enough to
+# turn a trajectory around. Several seeded playbooks are two steps long — the
+# whole `cert_expiry` and `disk_full` families are, and those are the ones that
+# reach the approval tier — and at a lower value a correct two-step fix bends the
+# curve without reversing it, which Guardian reads as `flat` and reports as
+# inconclusive. A right answer scoring as "no effect" is a calibration bug in the
+# world, not a finding about the playbook.
+EFFECTIVE_RELIEF = 0.8
 MISMATCH_PENALTY = -0.25
 RELIEF_FLOOR, RELIEF_CEILING = -1.0, 1.8
 

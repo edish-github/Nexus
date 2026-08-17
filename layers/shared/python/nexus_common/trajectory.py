@@ -63,6 +63,14 @@ OUTCOME_TARGETS: dict[str, tuple[str, str]] = {
     "connection_pool_exhaustion": ("pool_utilization", "down"),
     "memory_leak_oom": ("heap_used_pct", "down"),
     "cache_stampede": ("cache_hit_ratio", "up"),
+    # `cert_expiry` is the one archetype Guardian cannot honestly verify from a
+    # trailing window. Its failure signal is a cliff, not a creep: at the moment
+    # Oracle predicts, `tls_handshake_failures` has traversed 0.022 of its span —
+    # smaller than the 0.02 Guardian treats as noise. So a correct rotation and a
+    # useless one look the same for the length of a verification window, and the
+    # verdict comes back `inconclusive`. That is the right answer rather than a
+    # gap to paper over: this family is exactly the one held at the approval gate,
+    # and "a human decided, and we cannot yet prove they were right" is true.
     "cert_expiry": ("tls_handshake_failures", "down"),
     "disk_full": ("disk_used_pct", "down"),
     "bad_deploy_latency_regression": ("latency_p99_ms", "down"),
