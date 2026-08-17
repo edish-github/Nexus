@@ -56,6 +56,18 @@ verify-full: ## As `verify`, plus the 10k-row load check and the TTL reap check
 live: ## Run the synthetic fleet with the ramp control API on :8000
 	uv run python -m generator.live
 
+pipeline: ## Exit gate 3+4a: ramp → predict → claim → compete → execute → prevented
+	uv run python scripts/pipeline_local.py --scenario prevented
+
+pipeline-rollback: ## Exit gate 4b: the bad fix wins, degrades the fleet, is rolled back
+	uv run python scripts/pipeline_local.py --scenario rollback
+
+pipeline-novel: ## Cold start: a pattern no playbook claims → playbook birth
+	uv run python scripts/pipeline_local.py --scenario novel
+
+pipeline-concurrency: ## Exit gate 3: five deliveries of one prediction, one execution
+	uv run python scripts/pipeline_local.py --scenario concurrency
+
 dashboard: ## Serve the dashboard read API locally on :8787 (same handler as the Lambda)
 	DB_STATEMENT_TIMEOUT_MS=$(DB_STATEMENT_TIMEOUT_MS) uv run python scripts/dashboard_local.py
 
