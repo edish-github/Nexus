@@ -16,6 +16,10 @@ wheels/
 # Local-only reference material
 docs/
 
+# Generated demo world artifacts — reproduced exactly by `make seed`
+demo/backtest_set.jsonl
+demo/seed_manifest.json
+
 # Node
 node_modules/
 frontend/dist/
@@ -25,3 +29,6 @@ frontend/dist/
 
 # OS
 .DS_Store
+
+# Frontend local API config (frontend/.env.example is committed)
+frontend/.env
