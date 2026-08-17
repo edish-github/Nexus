@@ -224,10 +224,23 @@ Resources:
         - !Ref DbReadPolicy
         - !Ref BedrockInvokePolicy
         - !Ref CloudWatchMetricsPolicy
+      Events:
+        # The stale sweep, on its own schedule. A prediction abandoned in
+        # `preventing` holds Oracle's dedup guard, so without this a dead pipeline
+        # execution makes that failure permanently unpredictable. Chronicler also
+        # sweeps on every pipeline run; this is what covers the quiet days.
+        StaleSweep:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Name: !Sub "nexus-stale-sweep-${Environment}"
+            Description: Expire unanswered approvals and release abandoned predictions
+            Input: '{"sweep": true}'
 
-  # Dashboard read API — the only thing the frontend talks to. Seven read routes
-  # and one ramp control, routed in-code behind a Function URL. It never writes
-  # to the memory layer; the ramp control proxies to the fleet generator.
+  # Dashboard API — the only thing the frontend talks to. Eight read routes plus
+  # the ramp control and the approval decision, routed in-code behind a Function
+  # URL. The approval decision is its only write to the memory layer; the ramp
+  # control proxies to the fleet generator.
   DashboardFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -247,8 +260,15 @@ Resources:
         Variables:
           GENERATOR_URL: !Ref GeneratorUrl
           DASHBOARD_ALLOW_ORIGIN: !Ref DashboardAllowOrigin
+          EVENT_BUS_NAME: !Ref NexusBus
       Policies:
         - !Ref DbReadPolicy
+        # Approving an irreversible remediation puts one event on the bus, which
+        # is what starts the post-approval execution. Scoped to this bus only.
+        - Statement:
+            - Effect: Allow
+              Action: events:PutEvents
+              Resource: !GetAtt NexusBus.Arn
 
   # Reusable least-privilege managed policies (no wildcards on resources)
   DbReadPolicy:
@@ -326,6 +346,34 @@ Resources:
               source: [nexus.changefeed, nexus.poller]
               detail-type: [prediction.created]
 
+  # Post-approval execution: Guardian -> Chronicler. Step Functions cannot resume
+  # a finished execution mid-machine, so an irreversible remediation a human has
+  # authorized runs here — the same two Lambdas, entered where the gate stopped.
+  ApprovedStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "nexus-approved-${Environment}"
+      Type: STANDARD
+      DefinitionUri: statemachine/approved.asl.json
+      DefinitionSubstitutions:
+        GuardianArn: !GetAtt GuardianFunction.Arn
+        ChroniclerArn: !GetAtt ChroniclerFunction.Arn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource:
+                - !GetAtt GuardianFunction.Arn
+                - !GetAtt ChroniclerFunction.Arn
+      Events:
+        ApprovalApproved:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref NexusBus
+            Pattern:
+              source: [nexus.dashboard]
+              detail-type: [approval.approved]
+
   # CloudWatch dashboard
   NexusDashboard:
     Type: AWS::CloudWatch::Dashboard
@@ -376,6 +424,8 @@ Outputs:
     Value: !Ref NexusBus
   StateMachineArn:
     Value: !Ref PipelineStateMachine
+  ApprovedStateMachineArn:
+    Value: !Ref ApprovedStateMachine
   ArtifactsBucketName:
     Value: !Ref ArtifactsBucket
   DashboardName:

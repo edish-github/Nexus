@@ -1,9 +1,13 @@
-"""Dashboard read API: the only thing the frontend talks to.
+"""Dashboard API: the only thing the frontend talks to.
 
-Seven read endpoints and one control endpoint, routed in-code behind a single
+Eight read endpoints and two control endpoints, routed in-code behind a single
 Lambda Function URL. The contract they implement is `frontend/API_CONTRACT.md`.
 
-Two rules shape everything here:
+It writes in exactly one place. `POST /approvals/{id}/decide` records a human
+decision on an irreversible remediation, because that decision has nowhere else
+to come from — everything else here reads.
+
+Two rules shape everything else:
 
 * Nothing is invented. Every field is a column value, or is derived from column
   values by arithmetic that is named in the response. Where the database has no
@@ -30,7 +34,7 @@ from typing import Any
 import numpy as np
 import psycopg
 
-from nexus_common import db, log
+from nexus_common import config, db, log
 
 logger = log.get_logger("dashboard")
 
@@ -631,14 +635,60 @@ _backtest_cache: dict | None = None
 _backtest_at: float = 0.0
 
 
-def _backtest() -> dict | None:
-    """Leave-one-out k-NN over a deterministic sample of the episodic tier.
+def _stored_backtest() -> dict | None:
+    """The newest run from `scripts/backtest.py`, if one exists.
 
-    The held-out set in `demo/backtest_set.jsonl` is deliberately absent from
-    the database, so it cannot be scored here. What this measures instead is
-    honest and reproducible: each sampled window is matched against every other
-    window, and the resulting posterior is compared to the label the window
-    actually carries. `method` in the response names it.
+    That script replays Oracle over the held-out windows in
+    `demo/backtest_set.jsonl` — windows the seeder never wrote to the database —
+    so its numbers are out-of-sample. It needs the embedder and the held-out
+    file, which a read API has neither of, so it runs offline and stores the
+    result. This prefers it over the fallback below whenever it is available,
+    because in-sample numbers should never be shown when real ones exist.
+    """
+    # Tolerated failure: on a cluster where migration 006 has not been applied
+    # this table does not exist, and a missing honesty panel must not take the
+    # whole overview down with it.
+    rows, _ = _try_select(
+        """
+        SELECT method, k, min_similarity, min_matches, emit_threshold,
+               embedding_provider, sample_size, memory_size, true_positive,
+               false_positive, false_negative, true_negative, precision, recall,
+               median_lead_minutes, median_eta_minutes, calibration, created_at
+          FROM backtest_runs ORDER BY created_at DESC LIMIT 1
+        """,
+        as_of=FOLLOWER,
+        what="backtest_runs",
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "computed_at": _iso(r["created_at"]),
+        "method": r["method"],
+        "out_of_sample": True,
+        "k": r["k"],
+        "threshold": r["emit_threshold"],
+        "min_similarity": r["min_similarity"],
+        "min_matches": r["min_matches"],
+        "embedding_provider": r["embedding_provider"],
+        "sample_size": r["sample_size"],
+        "memory_size": r["memory_size"],
+        "true_positive": r["true_positive"], "false_positive": r["false_positive"],
+        "false_negative": r["false_negative"], "true_negative": r["true_negative"],
+        "precision": r["precision"], "recall": r["recall"],
+        "median_lead_minutes": r["median_lead_minutes"],
+        "median_eta_minutes": r["median_eta_minutes"],
+        "calibration": r["calibration"] or [],
+    }
+
+
+def _backtest() -> dict | None:
+    """The precision/recall panel's numbers.
+
+    Prefers a stored out-of-sample run. Falls back to a leave-one-out sweep over
+    the episodic tier, which is in-sample — every window it scores helped build
+    the memory scoring it — and says so in `method` and `out_of_sample` so the
+    panel can label it rather than passing it off as the real thing.
     """
     global _backtest_cache, _backtest_at
     import time
@@ -646,6 +696,11 @@ def _backtest() -> dict | None:
     now = time.time()
     if _backtest_cache is not None and now - _backtest_at < BACKTEST_TTL_SECONDS:
         return _backtest_cache
+
+    stored = _stored_backtest()
+    if stored is not None:
+        _backtest_cache, _backtest_at = stored, now
+        return stored
 
     tp = fp = fn = tn = 0
     leads: list[float] = []
@@ -699,6 +754,7 @@ def _backtest() -> dict | None:
     _backtest_cache = {
         "computed_at": _iso(datetime.now(UTC)),
         "method": "leave_one_out",
+        "out_of_sample": False,
         "k": RETRIEVAL_K,
         "threshold": BACKTEST_THRESHOLD,
         "sample_size": len(sample),
@@ -1256,6 +1312,209 @@ def get_evolution(params: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# GET /approvals · POST /approvals/{id}/decide — the human-in-the-loop tier
+# --------------------------------------------------------------------------- #
+
+APPROVALS_SQL = """
+    SELECT a.id, a.prediction_id, a.playbook_id, a.service_name, a.outcome_category,
+           a.reason, a.status, a.evidence, a.requested_at, a.decided_at, a.decided_by,
+           a.deadline,
+           p.prevention_status, p.predicted_eta, p.predicted_severity, p.causal_pattern,
+           p.alpha, p.beta, p.matching_precursor_count, p.created_at AS predicted_at,
+           b.name AS playbook_name, b.generation, b.memory_tier,
+           b.success_count, b.failure_count, b.remediation_steps
+      FROM approvals a
+      JOIN predictions p ON p.id = a.prediction_id
+      JOIN playbooks b ON b.id = a.playbook_id
+     WHERE a.status = ANY(%s::STRING[])
+     ORDER BY a.requested_at DESC
+     LIMIT %s
+"""
+
+
+def _shape_approval(row: dict) -> dict:
+    steps = row.get("remediation_steps") or []
+    return {
+        "id": str(row["id"]),
+        "prediction_id": str(row["prediction_id"]),
+        "playbook_id": str(row["playbook_id"]),
+        "playbook_name": row["playbook_name"],
+        "service_name": row["service_name"],
+        "outcome_category": row["outcome_category"],
+        "causal_pattern": row["causal_pattern"],
+        "reason": row["reason"],
+        "status": row["status"],
+        "requested_at": _iso(row["requested_at"]),
+        "decided_at": _iso(row["decided_at"]),
+        "decided_by": row["decided_by"],
+        "deadline": _iso(row["deadline"]),
+        "predicted_eta": _iso(row["predicted_eta"]),
+        "predicted_at": _iso(row["predicted_at"]),
+        "predicted_severity": row["predicted_severity"],
+        "prevention_status": row["prevention_status"],
+        "prediction": _beta_stats(row["alpha"], row["beta"]),
+        "matching_precursor_count": row["matching_precursor_count"],
+        "playbook": {
+            "generation": row["generation"],
+            "memory_tier": row["memory_tier"],
+            **_playbook_posterior(row["success_count"], row["failure_count"]),
+        },
+        "steps": [_shape_step(i, s) for i, s in enumerate(steps)],
+        # The bundle Sentinel captured at decision time, including the competition
+        # draws and the commit timestamp the evidence can be replayed at. Served
+        # verbatim: re-deriving it now could show a different answer than the one
+        # the request was actually raised on.
+        "evidence": row.get("evidence") or {},
+    }
+
+
+def list_approvals(params: dict) -> dict:
+    statuses = [s.strip() for s in (params.get("status") or "pending").split(",") if s.strip()]
+    limit = min(int(params.get("limit") or 20), 100)
+    # Not a follower read. An approval queue that is five seconds stale can show
+    # a request someone has already answered, and the whole point of the gate is
+    # that two people do not answer it twice.
+    rows = _select(APPROVALS_SQL, (statuses, limit))
+    return {
+        "generated_at": _iso(datetime.now(UTC)),
+        "statuses": statuses,
+        "approvals": [_shape_approval(r) for r in rows],
+        "source": "approvals × predictions × playbooks",
+    }
+
+
+DECISIONS = {"approved", "rejected"}
+
+
+def _publish_decision(approval: dict) -> str | None:
+    """Announce an approved remediation so the execution pipeline can pick it up.
+
+    The dashboard does not run Guardian itself. Approving puts an event on the
+    bus, which starts the post-approval state machine (Guardian → Chronicler)
+    with the same decision shape Sentinel would have produced. When the bus is
+    not configured — running the API locally — the decision is still recorded and
+    the caller is told plainly that nothing was dispatched.
+    """
+    if not config.EVENT_BUS_NAME:
+        return None
+    try:
+        import boto3
+
+        boto3.client("events", region_name=config.AWS_REGION).put_events(Entries=[{
+            "EventBusName": config.EVENT_BUS_NAME,
+            "Source": "nexus.dashboard",
+            "DetailType": "approval.approved",
+            "Detail": json.dumps(approval, default=str),
+        }])
+        return config.EVENT_BUS_NAME
+    except Exception as e:
+        logger.error("approval recorded but not dispatched", error=str(e),
+                     approval_id=approval.get("approval_id"))
+        return None
+
+
+def decide_approval(approval_id: str, payload: dict) -> tuple[int, dict]:
+    """Record a human decision on an irreversible remediation.
+
+    The decision is taken under `SELECT ... FOR UPDATE`, so two people clicking
+    at once produce one decision and one `409`, not two.
+
+    A **rejection** is not a dead end. The prediction moves to `shadowed` with
+    the playbook still attached, which is precisely the shadow tier's meaning —
+    *this was chosen and not run* — so Chronicler settles it against whatever
+    actually happens and the system learns that a human disagreed. Recording the
+    rejection and then discarding the outcome would waste the most informative
+    signal in the whole loop.
+    """
+    decision = str(payload.get("decision") or "").strip().lower()
+    if decision not in DECISIONS:
+        return 400, {"error": "bad_request",
+                     "detail": f"`decision` must be one of {sorted(DECISIONS)}"}
+    who = (str(payload.get("decided_by") or "dashboard").strip() or "dashboard")[:120]
+
+    def run(conn) -> tuple[int, dict]:
+        row = conn.execute(
+            """
+            SELECT a.status, a.prediction_id::STRING, a.playbook_id::STRING,
+                   a.service_name, a.outcome_category, a.reason, a.deadline,
+                   p.predicted_severity, p.prevention_status
+              FROM approvals a
+              JOIN predictions p ON p.id = a.prediction_id
+             WHERE a.id = %s
+             FOR UPDATE
+            """,
+            (approval_id,),
+        ).fetchone()
+        if row is None:
+            return 404, {"error": "not_found",
+                         "detail": "no such approval, or its prediction has expired"}
+        (status, prediction_id, playbook_id, service, category, reason, deadline,
+         severity, prevention_status) = row
+        if status != "pending":
+            return 409, {"error": "already_decided",
+                         "detail": f"this request was already {status}",
+                         "status": status}
+
+        conn.execute(
+            "UPDATE approvals SET status = %s, decided_at = now(), decided_by = %s "
+            "WHERE id = %s",
+            (decision, who, approval_id),
+        )
+        if decision == "rejected":
+            conn.execute(
+                "UPDATE predictions SET prevention_status = 'shadowed' "
+                "WHERE id = %s AND prevention_status = 'preventing'",
+                (prediction_id,),
+            )
+        # `evolution_log` has no 'decision' event type and does not need one: a
+        # human overruling the gate is the same kind of fact as a competition
+        # outcome, so it is recorded the way Sentinel records one, distinguished
+        # by `details.kind`.
+        conn.execute(
+            """
+            INSERT INTO evolution_log (event_type, playbook_id, details)
+            VALUES ('competition', %s, %s::JSONB)
+            """,
+            (playbook_id, json.dumps({
+                "kind": "approval_decision", "decision": decision, "decided_by": who,
+                "prediction_id": prediction_id, "approval_id": approval_id,
+                "service": service, "outcome_category": category, "reason": reason,
+                "deadline": deadline, "prevention_status_before": prevention_status,
+                "prevention_status_after": (
+                    "preventing" if decision == "approved" else "shadowed"),
+            }, default=str)),
+        )
+        return 200, {
+            "approval_id": approval_id, "decision": decision, "decided_by": who,
+            "prediction_id": prediction_id, "playbook_id": playbook_id,
+            "service": service, "outcome_category": category, "severity": severity,
+        }
+
+    status, body = db.tx_retry(run)
+    if status != 200:
+        return status, body
+
+    dispatched = None
+    if decision == "approved":
+        dispatched = _publish_decision({**body, "tier": "auto"})
+    logger.info("approval decided", approval_id=approval_id, decision=decision,
+                decided_by=body["decided_by"], dispatched=bool(dispatched))
+    return 200, {
+        **body,
+        "dispatched_to": dispatched,
+        "note": (
+            "Guardian will execute against the fleet." if dispatched
+            else "Decision recorded. No event bus is configured here, so nothing "
+                 "was dispatched — run Guardian against this prediction directly."
+        ) if decision == "approved" else (
+            "Recorded. The prediction is now a shadow record: the playbook stays "
+            "attached and unexecuted, and Chronicler scores the choice against "
+            "whatever actually happens."
+        ),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # POST /fleet/ramp
 # --------------------------------------------------------------------------- #
 
@@ -1323,17 +1582,20 @@ def _route(method: str, path: str, event: dict) -> dict:
         return {"statusCode": 204, "headers": CORS, "body": ""}
 
     if method == "POST":
-        if segments == ["fleet", "ramp"]:
-            raw = event.get("body") or "{}"
-            if event.get("isBase64Encoded"):
-                import base64
+        raw = event.get("body") or "{}"
+        if event.get("isBase64Encoded"):
+            import base64
 
-                raw = base64.b64decode(raw).decode()
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                return _error(400, "bad_request", "body is not valid JSON")
+            raw = base64.b64decode(raw).decode()
+        try:
+            payload = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            return _error(400, "bad_request", "body is not valid JSON")
+        if segments == ["fleet", "ramp"]:
             status, body = start_ramp(payload)
+            return _resp(status, body)
+        if len(segments) == 3 and segments[0] == "approvals" and segments[2] == "decide":
+            status, body = decide_approval(segments[1], payload)
             return _resp(status, body)
         return _error(404, "not_found", f"no route for POST /{'/'.join(segments)}")
 
@@ -1360,6 +1622,8 @@ def _route(method: str, path: str, event: dict) -> dict:
         return _resp(200, found) if found else _error(404, "not_found", "no such playbook")
     if segments == ["evolution"]:
         return _resp(200, get_evolution(_params(event)))
+    if segments == ["approvals"]:
+        return _resp(200, list_approvals(_params(event)))
 
     return _error(404, "not_found", f"no route for GET /{'/'.join(segments)}")
 

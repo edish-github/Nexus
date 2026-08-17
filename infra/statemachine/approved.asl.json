@@ -1,0 +1,55 @@
+{
+  "Comment": "Post-approval execution: Guardian -> Chronicler. Started by an EventBridge rule on approval.approved events from the dashboard. Step Functions cannot resume a finished execution mid-machine, so an approved irreversible remediation runs here rather than in the main pipeline — the same two Lambdas, entered at the point the human unblocked.",
+  "StartAt": "Guardian",
+  "States": {
+    "Guardian": {
+      "Type": "Task",
+      "Resource": "${GuardianArn}",
+      "Comment": "Execute the approved remediation. The decision payload already carries tier=auto, because a human supplied the authority the tier gate was withholding.",
+      "InputPath": "$.detail",
+      "TimeoutSeconds": 120,
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "Chronicler"
+        }
+      ],
+      "Next": "Chronicler"
+    },
+    "Chronicler": {
+      "Type": "Task",
+      "Resource": "${ChroniclerArn}",
+      "Comment": "Score the trial and apply the lifecycle, exactly as on the unattended path. An approved execution is a trial like any other.",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ApprovedRunFailed"
+        }
+      ],
+      "End": true
+    },
+    "ApprovedRunFailed": {
+      "Type": "Fail",
+      "Error": "NexusApprovedRunError",
+      "Cause": "An approved remediation failed after retries. The approval row records who authorized it and when; see the execution history and the failed task's CloudWatch logs."
+    }
+  }
+}

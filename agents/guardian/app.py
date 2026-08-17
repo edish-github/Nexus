@@ -271,13 +271,49 @@ def _close_out(conn, prediction_id: str, service: str, category: str, severity: 
             "prevention_status": status, "health": health}
 
 
+PLAYBOOK_SQL = """
+    SELECT id::STRING, name, reversible, generation, remediation_steps, inverse_steps,
+           success_count, failure_count
+    FROM playbooks WHERE id = %s
+"""
+
+
+def hydrate(decision: dict) -> dict:
+    """Fill in the playbook when the caller passed only its id.
+
+    Sentinel hands over the whole playbook, but the post-approval path does not:
+    an `approval.approved` event carries the decision a human made, not the
+    genome. Reading the steps from the row is also the safer order — the steps
+    that execute are the ones in the database now, not a copy that has been
+    sitting in an event payload since before someone went to lunch.
+    """
+    playbook = dict(decision.get("playbook") or {})
+    playbook_id = playbook.get("id") or decision.get("playbook_id")
+    if not playbook_id or playbook.get("remediation_steps") is not None:
+        return playbook
+
+    def read(conn):
+        return conn.execute(PLAYBOOK_SQL, (playbook_id,)).fetchone()
+
+    row = db.tx_retry(read)
+    if row is None:
+        logger.error("playbook named by the decision no longer exists",
+                     playbook_id=playbook_id)
+        return playbook
+    return {
+        "id": row[0], "name": row[1], "reversible": bool(row[2]), "generation": row[3],
+        "remediation_steps": row[4], "inverse_steps": row[5],
+        "successes": row[6], "failures": row[7],
+    }
+
+
 def run(decision: dict) -> dict:
     """Guardian's whole job, driven by Sentinel's decision."""
     prediction_id = decision["prediction_id"]
     tier = decision.get("tier")
     service = decision.get("service")
     category = decision.get("outcome_category")
-    playbook = decision.get("playbook") or {}
+    playbook = hydrate(decision)
     playbook_id = playbook.get("id")
 
     if tier != "auto":
@@ -285,6 +321,12 @@ def run(decision: dict) -> dict:
                     reason=decision.get("reason"))
         return {"prediction_id": prediction_id, "tier": tier, "outcome": "not_executed",
                 "reason": decision.get("reason", f"tier is {tier}")}
+
+    if not playbook.get("remediation_steps"):
+        logger.error("nothing to execute", prediction_id=prediction_id,
+                     playbook_id=playbook_id)
+        return {"prediction_id": prediction_id, "tier": tier, "outcome": "no_playbook",
+                "reason": "the decision named no playbook with executable steps"}
 
     if not fleet_client.configured():
         logger.error("GENERATOR_URL is not set — refusing to report a fix that never ran",
