@@ -45,7 +45,7 @@ code alone.
 
 | Area | State |
 |---|---|
-| Multi-region schema, vector indexes, TTLs, zone configs | Verified live — `make verify`, 19/19 on a freshly seeded world |
+| Multi-region schema, vector indexes, TTLs, zone configs | Verified live — `make verify`, 21/21 on a freshly seeded world |
 | Migration runner + schema smoke test | Verified live |
 | Synthetic world generator, embedding pipeline, seeded memory | Verified live — 155 snapshots, 30 playbooks, deterministic |
 | Live fleet simulator + ramp control API | Verified live |
@@ -94,7 +94,7 @@ bucket** on a small sample. Recall of 1.000 is the easiest possible case — the
 held-out incidents are complete precursor windows, and eight synthetic archetypes
 are far more separable than real telemetry. The number worth trusting is precision.
 
-Two of `make verify`'s nineteen checks are properties of the *seeded world* rather
+Two of `make verify`'s twenty-one checks are properties of the *seeded world* rather
 than of the code — a playbook one success from promotion, and a challenger with
 zero trials. Rehearsal consumes both, because the system genuinely learns from
 being rehearsed, so on a world that has been demoed against they fail and
