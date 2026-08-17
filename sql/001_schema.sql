@@ -41,8 +41,8 @@ CREATE TABLE IF NOT EXISTS precursor_snapshots (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE VECTOR INDEX IF NOT EXISTS precursor_trajectory_embedding_idx
-    ON precursor_snapshots (trajectory_embedding vector_cosine_ops);
+CREATE VECTOR INDEX IF NOT EXISTS precursor_category_trajectory_idx
+    ON precursor_snapshots (outcome_category, trajectory_embedding vector_cosine_ops);
 
 CREATE INDEX IF NOT EXISTS precursor_outcome_idx
     ON precursor_snapshots (outcome_category, led_to_incident);
