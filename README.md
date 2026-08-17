@@ -45,11 +45,12 @@ code alone.
 
 | Area | State |
 |---|---|
-| Multi-region schema, vector indexes, TTLs, zone configs | Verified live — `make verify`, 18/18 |
+| Multi-region schema, vector indexes, TTLs, zone configs | Verified live — `make verify`, 19/19 on a freshly seeded world |
 | Migration runner + schema smoke test | Verified live |
 | Synthetic world generator, embedding pipeline, seeded memory | Verified live — 155 snapshots, 30 playbooks, deterministic |
 | Live fleet simulator + ramp control API | Verified live |
 | Oracle · Sentinel · Diagnostician · Guardian · Chronicler | Verified live — `make demo-run`, 24/24 |
+| Unit suite | 242 tests, no database required · ruff clean · frontend builds and lints clean |
 | Playbook lifecycle: birth, growth, shadow, mutation, merge, promotion, retirement | Verified live — `make lifecycle`, 36/36, all 8 event types |
 | Human-in-the-loop approval gate (read, decide, dispatch) | Verified live — `make pipeline-approval` |
 | Concurrency: duplicate delivery, and three simultaneous incidents | Verified live — `make pipeline-concurrency`, `make load` 7/7 |
@@ -91,6 +92,12 @@ Read it honestly: well behaved above 0.80, and **over-confident in the 0.60–0.
 bucket** on a small sample. Recall of 1.000 is the easiest possible case — the
 held-out incidents are complete precursor windows, and eight synthetic archetypes
 are far more separable than real telemetry. The number worth trusting is precision.
+
+Two of `make verify`'s nineteen checks are properties of the *seeded world* rather
+than of the code — a playbook one success from promotion, and a challenger with
+zero trials. Rehearsal consumes both, because the system genuinely learns from
+being rehearsed, so on a world that has been demoed against they fail and
+`make demo-reset` restores them. `make demo-check` exists to tell you which it is.
 
 ### Known gaps, and why
 
