@@ -39,7 +39,9 @@ Makefile        one-command ops (seed/verify/test/deploy/migrate/live/…)
 | Live fleet simulator + ramp control API | Complete |
 | Dashboard read API (7 read routes + the fleet ramp control) | Complete, verified against the live cluster |
 | Dashboard UI (5 views, live-data-backed) | Complete; see `frontend/README.md` |
-| Agent logic (oracle, sentinel, diagnostician, guardian, chronicler) | Handler stubs only |
+| Oracle (predict with a Beta posterior) · Sentinel (claim, Thompson-sampled competition, tiered gate) | Complete, driven end to end by `make pipeline` |
+| Guardian (execute, verify, roll back) · Diagnostician (RCA, precursor writer, playbook birth) | Complete; the Bedrock-authored paths degrade to retrieved-evidence templates without credentials |
+| Chronicler (Darwinian lifecycle engine) | Handler stub only |
 
 Key locked decisions: **Python 3.12** Lambdas · **AWS SAM** IaC · embedding dim
 **1024** (Titan Text Embeddings V2 default — *not* 1536) · `institutional_playbooks`
@@ -79,11 +81,13 @@ make ui                              # Vite dev server on :5173
 Function URL runs — so the UI is never developed against a different
 implementation than it ships against.
 
-Because every agent in `agents/` is still a stub, `predictions` stays empty.
-The dashboard is built for that: the Overview centre panel falls back to the
-most recent prevented row in `incidents`, and every other panel shows a
-designed empty state naming the table it consulted. Nothing is faked to fill
-the gap — see `frontend/README.md`.
+`predictions` is populated by Oracle, so run `make pipeline` (or `make live`
+alongside the deployed Oracle schedule) to give the dashboard something to show.
+Between runs the table empties itself — predictions carry a 6-hour Row-Level TTL
+— and the dashboard is built for that: the Overview centre panel falls back to
+the most recent prevented row in `incidents`, and every other panel shows a
+designed empty state naming the table it consulted. Nothing is faked to fill the
+gap — see `frontend/README.md`.
 
 ---
 
@@ -201,7 +205,49 @@ Seven checks against the live cluster:
 7. row-level TTL actually reaps an expired row (`make verify-full`; the TTL job
    cron on that table is `*/5`, so it waits)
 
-## 4. AWS stack and the changefeed pipeline
+## 4. The prevention pipeline
+
+```bash
+make pipeline               # ramp → predict → claim → compete → execute → prevented
+make pipeline-rollback      # the bad fix wins, degrades the fleet, is rolled back
+make pipeline-novel         # a pattern no playbook claims — the cold-start path
+make pipeline-concurrency   # five deliveries of one prediction, one execution
+```
+
+Step Functions is not deployed on a laptop, so `scripts/pipeline_local.py` plays
+its part: it starts the synthetic fleet in-process, ramps a service, feeds the
+sensory tier, and calls Sentinel → Diagnostician → Guardian in the state
+machine's order. Everything else is real — the same agent code, the same
+queries, against the same cluster.
+
+**Oracle** matches the live telemetry window against `precursor_snapshots` (k=14)
+and emits a prediction whose confidence is a Beta posterior over the matched
+neighbours' outcomes — `alpha` = neighbours that failed + 1, `beta` = neighbours
+that recovered + 1. Both are stored, so the credible interval survives the trip.
+It stays silent below 5 close neighbours or a 0.60 posterior mean.
+
+**Sentinel** claims the prediction with `SELECT … FOR UPDATE` (duplicate
+changefeed deliveries become clean no-ops), retrieves the top-8 candidate
+playbooks by vector similarity, and selects by **Thompson sampling** — sampling
+each Beta posterior rather than taking the argmax, which is the only reason a
+zero-trial challenger ever gets a turn. Every draw is written to `evolution_log`.
+The tier then decides: shadow below 0.75 confidence, auto if the winner is
+reversible, approval (an `approvals` row) if it is not.
+
+**Guardian** executes against the fleet control API, watches the target metric
+for a verification window, and on degradation runs the inverses in reverse —
+each one reverting the exact step it undoes rather than being replayed as a
+fresh action. Steps are idempotent by construction: the action vocabulary is
+declarative, so a retry that re-applies a step already in desired state is a
+no-op. "Flat" is reported as inconclusive, never as success.
+
+**Diagnostician** promotes the trailing sensory window into `precursor_snapshots`
+— reusing the embedding rather than paying Titan twice — retrieves similar
+incidents, and on a genuinely unprecedented pattern asks Bedrock for a playbook.
+Anything failing `PlaybookDraft` validation is rejected outright: a malformed
+genome is stillborn, logged, never inserted, never executed.
+
+## 5. AWS stack and the changefeed pipeline
 
 ```bash
 make deploy           # sam build (container) + sam deploy — one command, whole stack
