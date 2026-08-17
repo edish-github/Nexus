@@ -71,6 +71,9 @@ pipeline-concurrency: ## Exit gate 3: five deliveries of one prediction, one exe
 pipeline-approval: ## HITL: an irreversible fix waits at the gate until a human answers
 	uv run python scripts/pipeline_local.py --scenario approval
 
+load: ## Phase 7 hardening: three concurrent incident ramps; the pipeline holds
+	uv run python scripts/load_local.py
+
 demo-check: ## Are the five staged beats still stageable? Run before every rehearsal
 	uv run python scripts/demo_check.py
 
