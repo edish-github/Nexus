@@ -14,6 +14,17 @@ Parameters:
     Type: String
     Default: anthropic.claude-opus-5
     Description: Claude model id (Bedrock) for reasoning, mutation, and merge.
+  GeneratorUrl:
+    Type: String
+    Default: ""
+    Description: >
+      Base URL of the synthetic fleet control API (`make live`). The dashboard's
+      ramp control proxies to it. Left empty, the control reports itself
+      unconfigured rather than pretending a ramp started.
+  DashboardAllowOrigin:
+    Type: String
+    Default: "*"
+    Description: CORS origin for the dashboard read API.
   BedrockEmbeddingModelId:
     Type: String
     Default: amazon.titan-embed-text-v2:0
@@ -214,6 +225,31 @@ Resources:
         - !Ref BedrockInvokePolicy
         - !Ref CloudWatchMetricsPolicy
 
+  # Dashboard read API — the only thing the frontend talks to. Seven read routes
+  # and one ramp control, routed in-code behind a Function URL. It never writes
+  # to the memory layer; the ramp control proxies to the fleet generator.
+  DashboardFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "nexus-dashboard-${Environment}"
+      CodeUri: ../agents/dashboard
+      Handler: app.handler
+      Timeout: 30
+      MemorySize: 1024
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins: [!Ref DashboardAllowOrigin]
+          AllowMethods: [GET, POST, OPTIONS]
+          AllowHeaders: [content-type]
+          MaxAge: 300
+      Environment:
+        Variables:
+          GENERATOR_URL: !Ref GeneratorUrl
+          DASHBOARD_ALLOW_ORIGIN: !Ref DashboardAllowOrigin
+      Policies:
+        - !Ref DbReadPolicy
+
   # Reusable least-privilege managed policies (no wildcards on resources)
   DbReadPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -333,6 +369,9 @@ Outputs:
   ReceiverUrl:
     Description: Changefeed webhook endpoint (put this in sql/changefeed.sql).
     Value: !GetAtt ReceiverFunctionUrl.FunctionUrl
+  DashboardApiUrl:
+    Description: Dashboard read API (set this as VITE_API_BASE_URL in frontend/.env).
+    Value: !GetAtt DashboardFunctionUrl.FunctionUrl
   EventBusName:
     Value: !Ref NexusBus
   StateMachineArn:

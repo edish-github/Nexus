@@ -6,6 +6,7 @@ errors that CockroachDB can raise under contention.
 """
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -21,15 +22,25 @@ _pool: ConnectionPool | None = None
 # CockroachDB retryable states: 40001 (serialization failure), 40003, 08xxx (conn)
 _RETRYABLE = ("40001", "40003", "08000", "08003", "08006")
 
+# Statement timeout applied to every connection this pool hands out. Unset by
+# default, so the write path keeps whatever the server allows. A read-only
+# caller that must answer a request within a bounded time — the dashboard API —
+# sets it, which turns a table blocked on someone else's open transaction into
+# one failed field instead of a hung request.
+_STATEMENT_TIMEOUT_MS = os.environ.get("DB_STATEMENT_TIMEOUT_MS", "")
+
 
 def get_pool() -> ConnectionPool:
     global _pool
     if _pool is None:
+        kwargs: dict[str, Any] = {"autocommit": False, "application_name": "nexus"}
+        if _STATEMENT_TIMEOUT_MS:
+            kwargs["options"] = f"-c statement_timeout={int(_STATEMENT_TIMEOUT_MS)}"
         _pool = ConnectionPool(
             conninfo=config.db_dsn(),
             min_size=1,
             max_size=4,
-            kwargs={"autocommit": False, "application_name": "nexus"},
+            kwargs=kwargs,
             open=True,
         )
     return _pool
