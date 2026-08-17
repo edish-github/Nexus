@@ -113,12 +113,27 @@ def check_index(conn, probe: str) -> None:
           "the category as a prefix span", prefixed,
           "" if prefixed else "EXPLAIN:\n" + hinted_plan)
 
+    # Recall, not identity. A CockroachDB vector index is *approximate* — that is
+    # the whole reason it is faster than sorting every row — so it may legitimately
+    # return a slightly different top-k than an exact scan, especially where
+    # distances are near-tied. Asserting byte-identical results asserts that an ANN
+    # index is not an ANN index, and it flakes accordingly: this check failed once
+    # against a corpus the same query agreed on a minute later. What matters is that
+    # the index finds the neighbours that matter, so the assertion is recall against
+    # the exact answer, with the top match exact.
     baseline = [r[0] for r in conn.execute(HYBRID_SQL, params).fetchall()]
     through_index = [r[0] for r in conn.execute(hinted_sql, params).fetchall()]
-    check("the vector index returns the same neighbours as the scan",
-          baseline == through_index,
-          f"{len(baseline)} rows, identical order" if baseline == through_index
-          else "the index and the scan disagree — the index is not correctly built")
+    overlap = len(set(baseline) & set(through_index))
+    recall = overlap / len(baseline) if baseline else 0.0
+    print(f"     index recall@{len(baseline)} against the exact scan: {recall:.3f} "
+          f"({overlap}/{len(baseline)} shared)")
+    check("the vector index recovers the exact scan's neighbourhood (recall >= 0.9)",
+          recall >= 0.9,
+          f"recall {recall:.3f} — the index is missing neighbours the scan finds")
+    check("the index agrees with the scan on the nearest neighbour",
+          bool(baseline) and baseline[0] == through_index[0],
+          "" if baseline and baseline[0] == through_index[0]
+          else "the closest match differs, which no amount of approximation excuses")
 
 
 # --------------------------------------------------------------------------- #
