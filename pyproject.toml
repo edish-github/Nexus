@@ -34,11 +34,15 @@ addopts = "-ra -q"
 testpaths = [
     "tests",
 ]
+# nexus_common ships as a Lambda layer, so locally it has to be put on the path
+# explicitly; scripts/ is here so the seed and verify scripts are importable.
+pythonpath = [".", "layers/shared/python", "scripts"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 extend-exclude = [".venv", "frontend", "docs"]
+src = [".", "layers/shared/python", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
