@@ -1,21 +1,174 @@
 @import 'tailwindcss';
 
-/* Color semantics used across the dashboard:
-   green = proven, amber = experimental, red = failing, grey = retired. */
+/* Design tokens lifted from the mockup rather than re-derived by eye.
+   The five status colours are the whole visual grammar: a reader who learns
+   them on the fleet strip can read the genealogy tree without a legend. */
 @theme {
-  --color-nexus-proven: oklch(0.72 0.17 152);
-  --color-nexus-experimental: oklch(0.79 0.16 78);
-  --color-nexus-failing: oklch(0.65 0.21 25);
-  --color-nexus-retired: oklch(0.55 0.01 260);
+  --color-nx-bg: #08090c;
+  --color-nx-sunken: #0a0c0f;
+  --color-nx-panel: #0b0d11;
+  --color-nx-raised: #101217;
+  --color-nx-elevated: #111318;
+
+  --color-nx-text: #e8ebf0;
+  --color-nx-text-2: #dde2ea;
+  --color-nx-text-3: #b9c0cb;
+  --color-nx-muted: #9aa3b2;
+  --color-nx-muted-2: #8a93a1;
+  --color-nx-muted-3: #7c8593;
+  --color-nx-dim: #6b7381;
+  --color-nx-dim-2: #646c7a;
+  --color-nx-faint: #5a6270;
+  --color-nx-faint-2: #4e5663;
+  --color-nx-faint-3: #454c58;
+  --color-nx-faint-4: #3e4550;
+
+  --color-nx-accent: #7c9eff;
+  --color-nx-accent-hi: #9cb6ff;
+
+  /* proven / experimental / failing / institutional / retired, plus the
+     sensory-tier cyan. Nothing else may carry semantic colour. */
+  --color-nx-proven: #46d39a;
+  --color-nx-experimental: #f2b457;
+  --color-nx-failing: #ff6b5e;
+  --color-nx-institutional: #b98bff;
+  --color-nx-retired: #4e5663;
+  --color-nx-sensory: #4fd0e0;
+
+  --color-nx-line: rgba(255, 255, 255, 0.07);
+  --color-nx-line-soft: rgba(255, 255, 255, 0.045);
+  --color-nx-line-strong: rgba(255, 255, 255, 0.14);
+
+  --font-sans:
+    'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }
 
 :root {
   color-scheme: dark;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  background-color: oklch(0.16 0.01 260);
-  color: oklch(0.93 0.01 260);
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: var(--color-nx-bg);
+  color: var(--color-nx-text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'ss01', 'cv01';
+}
+
+::selection {
+  background: rgba(124, 158, 255, 0.28);
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: content-box;
+}
+
+@keyframes nx-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.28;
+  }
+}
+@keyframes nx-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes nx-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.nx-pulse {
+  animation: nx-pulse 1.4s ease-in-out infinite;
+}
+.nx-in {
+  animation: nx-in 0.3s ease;
+}
+
+/* The mockup's recurring micro-label: mono, 9px, wide tracking, faint. */
+.nx-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--color-nx-faint);
+}
+
+.nx-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* SQL is shown so a reader can check the operator. JetBrains Mono ligates
+   `<=>` into a single arrow glyph, which hides the one token that matters. */
+.nx-sql {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
+/* Skeletons: a shimmer that reads as "not yet", never as a value. */
+.nx-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 3px;
+}
+.nx-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 30%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.06),
+    transparent
+  );
+  animation: nx-sweep 1.6s linear infinite;
+}
+
+/* react-flow paints its own surface; hand it ours. */
+.react-flow__renderer,
+.react-flow__pane {
+  background: transparent;
+}
+.react-flow__attribution {
+  display: none;
 }
