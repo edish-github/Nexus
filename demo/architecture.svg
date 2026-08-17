@@ -1,0 +1,270 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 920" width="1440" height="920"
+     font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>NEXUS architecture — the prevention pipeline and the four memory tiers</title>
+  <desc>Telemetry from a synthetic fleet is embedded into a two-hour sensory tier.
+  Oracle matches the live window against permanent precursor snapshots and writes a
+  prediction, whose insert fires a CockroachDB changefeed into EventBridge and Step
+  Functions. Sentinel claims it and competes playbooks by Thompson sampling;
+  Diagnostician explains and promotes the window into episodic memory; Guardian
+  executes and rolls back; Chronicler applies the playbook lifecycle. Every
+  lifecycle transition is written to an append-only evolution log.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7a90"/>
+    </marker>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7a90"/>
+    </marker>
+    <marker id="a-warm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c8913f"/>
+    </marker>
+    <marker id="a-mem" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f8f7b"/>
+    </marker>
+    <style>
+      .bg      { fill: #0d1117; }
+      .panel   { fill: #131923; stroke: #222c3a; stroke-width: 1; }
+      .agent   { fill: #161d29; stroke: #2c3a4d; stroke-width: 1.25; }
+      .mem     { fill: #101a19; stroke: #2a4340; stroke-width: 1.25; }
+      .aws     { fill: #1a1710; stroke: #45381f; stroke-width: 1.25; }
+      .title   { fill: #e8edf5; font-size: 26px; font-weight: 650; letter-spacing: -0.4px; }
+      .sub     { fill: #7d8898; font-size: 13px; }
+      .zone    { fill: #6d7787; }
+      .zlabel  { fill: #6d7787; font-size: 10.5px; font-weight: 650; letter-spacing: 1.4px; }
+      .name    { fill: #e2e8f1; font-size: 14.5px; font-weight: 600; }
+      .role    { fill: #8d99a9; font-size: 11.5px; }
+      .mono    { fill: #7f8ea3; font-size: 10.5px;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .monolit { fill: #9fb0c6; font-size: 11px;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .memname { fill: #8fd4bd; font-size: 12.5px; font-weight: 600;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .awsname { fill: #e0b464; font-size: 12px; font-weight: 600; }
+      .edge    { stroke: #6b7a90; stroke-width: 1.5; fill: none; }
+      .edge-w  { stroke: #c8913f; stroke-width: 1.5; fill: none; }
+      .edge-m  { stroke: #4f8f7b; stroke-width: 1.4; fill: none; stroke-dasharray: 4 3; }
+      .elabel  { fill: #78849a; font-size: 10px;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .wlabel  { fill: #c8913f; font-size: 10px;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1440" height="920"/>
+
+  <text class="title" x="48" y="56">NEXUS</text>
+  <text class="sub" x="48" y="80">
+    A memory that predicts failures, acts on them, and evolves the playbooks it acts with.
+  </text>
+  <text class="mono" x="48" y="100">
+    CockroachDB Cloud · 3 regions · SURVIVE REGION FAILURE  |  AWS Lambda · Step Functions ·
+    EventBridge · Bedrock
+  </text>
+
+  <!-- ================= zone 1: the fleet and the sensory tier ================= -->
+  <text class="zlabel" x="48" y="150">THE WORLD</text>
+
+  <rect class="panel" x="48" y="164" width="196" height="128" rx="8"/>
+  <text class="name" x="66" y="190">Synthetic fleet</text>
+  <text class="role" x="66" y="210">4 services · 3 regions</text>
+  <text class="role" x="66" y="228">8 failure archetypes</text>
+  <text class="mono" x="66" y="252">generator/live.py</text>
+  <text class="mono" x="66" y="270">FastAPI ramp control</text>
+
+  <rect class="mem" x="48" y="316" width="196" height="104" rx="8"/>
+  <text class="zlabel" x="66" y="340">SENSORY</text>
+  <text class="memname" x="66" y="362">telemetry_embeddings</text>
+  <text class="role" x="66" y="382">VECTOR(1024) · Titan V2</text>
+  <text class="mono" x="66" y="402">Row-Level TTL: 2 hours</text>
+
+  <path class="edge" d="M 146 292 L 146 316" marker-end="url(#a)"/>
+
+  <!-- ================= zone 2: Oracle ================= -->
+  <text class="zlabel" x="300" y="150">PREDICT</text>
+
+  <rect class="agent" x="300" y="164" width="212" height="256" rx="8"/>
+  <text class="name" x="320" y="190">Oracle</text>
+  <text class="role" x="320" y="210">k-NN over precursors, k=14</text>
+  <text class="role" x="320" y="228">no category filter — the</text>
+  <text class="role" x="320" y="246">category is the answer</text>
+
+  <line x1="320" y1="264" x2="492" y2="264" stroke="#2c3a4d" stroke-width="1"/>
+  <text class="monolit" x="320" y="286">α = neighbours that failed + 1</text>
+  <text class="monolit" x="320" y="304">β = neighbours that recovered + 1</text>
+  <text class="role" x="320" y="326">Beta posterior, both params</text>
+  <text class="role" x="320" y="344">stored. Fitness is never a</text>
+  <text class="role" x="320" y="362">float on a row.</text>
+  <text class="mono" x="320" y="390">silent below 5 matches</text>
+  <text class="mono" x="320" y="406">or a 0.60 mean</text>
+
+  <path class="edge" d="M 244 368 L 300 368" marker-end="url(#a)"/>
+  <text class="elabel" x="248" y="360">window</text>
+
+  <!-- ================= zone 3: the transport ================= -->
+  <text class="zlabel" x="568" y="150">TRANSPORT</text>
+
+  <rect class="mem" x="568" y="164" width="188" height="94" rx="8"/>
+  <text class="memname" x="586" y="188">predictions</text>
+  <text class="role" x="586" y="208">alpha, beta, prevention_status</text>
+  <text class="mono" x="586" y="228">6h TTL · dedup unique index</text>
+  <text class="mono" x="586" y="246">the changefeed source table</text>
+
+  <path class="edge" d="M 512 210 L 568 210" marker-end="url(#a)"/>
+  <text class="elabel" x="516" y="202">INSERT</text>
+
+  <rect class="aws" x="568" y="282" width="188" height="138" rx="8"/>
+  <text class="zlabel" x="586" y="306">AWS</text>
+  <text class="awsname" x="586" y="328">CHANGEFEED → webhook</text>
+  <text class="role" x="586" y="346">receiver Lambda, HMAC</text>
+  <text class="awsname" x="586" y="372">EventBridge</text>
+  <text class="role" x="586" y="390">nexus-bus</text>
+  <text class="awsname" x="586" y="414">Step Functions</text>
+
+  <path class="edge" d="M 662 258 L 662 282" marker-end="url(#a)"/>
+
+  <!-- ================= zone 4: the pipeline ================= -->
+  <text class="zlabel" x="812" y="150">ACT</text>
+
+  <rect class="agent" x="812" y="164" width="248" height="118" rx="8"/>
+  <text class="name" x="832" y="190">Sentinel</text>
+  <text class="role" x="832" y="210">claim: SELECT … FOR UPDATE</text>
+  <text class="role" x="832" y="228">at-least-once delivery →</text>
+  <text class="role" x="832" y="246">exactly-once execution</text>
+  <text class="mono" x="832" y="268">Thompson sampling · θ × similarity</text>
+
+  <rect class="agent" x="812" y="302" width="248" height="118" rx="8"/>
+  <text class="name" x="832" y="328">Diagnostician</text>
+  <text class="role" x="832" y="348">similar-incident RCA</text>
+  <text class="role" x="832" y="366">promotes the window into</text>
+  <text class="role" x="832" y="384">episodic memory</text>
+  <text class="mono" x="832" y="406">birth on a novel pattern</text>
+
+  <rect class="agent" x="812" y="440" width="248" height="118" rx="8"/>
+  <text class="name" x="832" y="466">Guardian</text>
+  <text class="role" x="832" y="486">executes · verifies · rolls back</text>
+  <text class="role" x="832" y="504">each inverse reverts the exact</text>
+  <text class="role" x="832" y="522">step it undoes</text>
+  <text class="mono" x="832" y="544">flat = inconclusive, never success</text>
+
+  <rect class="agent" x="812" y="578" width="248" height="136" rx="8"/>
+  <text class="name" x="832" y="604">Chronicler</text>
+  <text class="role" x="832" y="624">growth · shadow · mutation</text>
+  <text class="role" x="832" y="642">merge · promotion · retirement</text>
+  <text class="mono" x="832" y="666">no transition without its log row</text>
+  <text class="mono" x="832" y="684">sweeps predictions left in</text>
+  <text class="mono" x="832" y="700">`preventing` by a dead run</text>
+
+  <path class="edge" d="M 756 222 L 812 222" marker-end="url(#a)"/>
+  <path class="edge" d="M 936 282 L 936 302" marker-end="url(#a)"/>
+  <path class="edge" d="M 936 420 L 936 440" marker-end="url(#a)"/>
+  <path class="edge" d="M 936 558 L 936 578" marker-end="url(#a)"/>
+
+  <!-- the tier gate -->
+  <rect class="panel" x="1104" y="164" width="288" height="146" rx="8"/>
+  <text class="zlabel" x="1122" y="188">THE TIER GATE</text>
+  <text class="monolit" x="1122" y="212">mean &lt; 0.75            → shadow</text>
+  <text class="monolit" x="1122" y="234">≥ 0.75 and reversible  → auto</text>
+  <text class="monolit" x="1122" y="256">≥ 0.75 and not         → approve</text>
+  <text class="role" x="1122" y="280">A false positive here changes</text>
+  <text class="role" x="1122" y="298">production. That is the whole</text>
+  <path class="edge" d="M 1060 222 L 1104 222" marker-end="url(#a)"/>
+
+  <!-- human in the loop -->
+  <rect class="aws" x="1104" y="334" width="288" height="122" rx="8"/>
+  <text class="zlabel" x="1122" y="358">HUMAN IN THE LOOP</text>
+  <text class="awsname" x="1122" y="380">approvals</text>
+  <text class="role" x="1122" y="400">decision under a row lock;</text>
+  <text class="role" x="1122" y="418">a second click gets a 409</text>
+  <text class="mono" x="1122" y="440">reject → shadow record, still scored</text>
+  <path class="edge-w" d="M 1248 310 L 1248 334" marker-end="url(#a-warm)"/>
+  <path class="edge-w" d="M 1104 400 C 1078 400 1078 500 1060 500" marker-end="url(#a-warm)"/>
+  <text class="wlabel" x="1076" y="470">approval.approved</text>
+  <text class="wlabel" x="1076" y="486">→ Guardian</text>
+
+  <!-- Bedrock -->
+  <rect class="aws" x="1104" y="480" width="288" height="112" rx="8"/>
+  <text class="zlabel" x="1122" y="504">REASONING</text>
+  <text class="awsname" x="1122" y="526">Amazon Bedrock</text>
+  <text class="role" x="1122" y="546">authors new genomes only:</text>
+  <text class="role" x="1122" y="564">birth, mutation, merge</text>
+  <text class="mono" x="1122" y="584">schema-validated or stillborn</text>
+  <path class="edge-w" d="M 1104 540 C 1082 540 1082 640 1060 640" marker-end="url(#a-warm)"/>
+
+  <!-- ================= zone 5: the memory tiers ================= -->
+  <text class="zlabel" x="48" y="470">MEMORY · CockroachDB, one cluster, three regions</text>
+
+  <rect class="mem" x="48" y="484" width="232" height="120" rx="8"/>
+  <text class="zlabel" x="66" y="508">EPISODIC</text>
+  <text class="memname" x="66" y="530">precursor_snapshots</text>
+  <text class="role" x="66" y="550">what a failure looked like</text>
+  <text class="role" x="66" y="568">before it happened</text>
+  <text class="mono" x="66" y="590">gc.ttlseconds = 604800 → AOST</text>
+
+  <rect class="mem" x="308" y="484" width="232" height="120" rx="8"/>
+  <text class="zlabel" x="326" y="508">PROCEDURAL</text>
+  <text class="memname" x="326" y="530">playbooks</text>
+  <text class="role" x="326" y="550">success/failure counters,</text>
+  <text class="role" x="326" y="568">generation, parent, lineage</text>
+  <text class="mono" x="326" y="590">REGIONAL BY ROW · 90d disuse TTL</text>
+
+  <rect class="mem" x="568" y="484" width="232" height="120" rx="8"/>
+  <text class="zlabel" x="586" y="508">INSTITUTIONAL</text>
+  <text class="memname" x="586" y="530">institutional_playbooks</text>
+  <text class="role" x="586" y="550">promoted past 0.9 over</text>
+  <text class="role" x="586" y="568">ten trials</text>
+  <text class="mono" x="586" y="590">LOCALITY GLOBAL · local reads</text>
+
+  <rect class="mem" x="48" y="636" width="492" height="118" rx="8"/>
+  <text class="zlabel" x="66" y="660">THE AUDIT TRAIL</text>
+  <text class="memname" x="66" y="682">evolution_log</text>
+  <text class="role" x="66" y="702">append-only · birth · growth · mutation · competition ·
+    merge · promotion</text>
+  <text class="role" x="66" y="720">retirement · rollback — with the posterior before and after
+    each transition</text>
+  <text class="mono" x="66" y="742">no lifecycle change reaches the database without its row,
+    in the same transaction</text>
+
+  <rect class="mem" x="568" y="636" width="232" height="118" rx="8"/>
+  <text class="zlabel" x="586" y="660">THE HONESTY LAYER</text>
+  <text class="memname" x="586" y="682">backtest_runs</text>
+  <text class="role" x="586" y="702">Oracle replayed over windows</text>
+  <text class="role" x="586" y="720">withheld from the database</text>
+  <text class="mono" x="586" y="742">precision · recall · calibration</text>
+
+  <path class="edge-m" d="M 300 396 C 268 396 264 470 164 484" marker-end="url(#a-mem)"/>
+  <text class="elabel" x="196" y="452">k-NN</text>
+
+  <path class="edge-m" d="M 812 372 C 700 372 620 440 424 484" marker-end="url(#a-mem)"/>
+  <text class="elabel" x="628" y="424">promote</text>
+
+  <path class="edge-m" d="M 812 640 C 620 640 560 620 540 660" marker-end="url(#a-mem)"/>
+  <path class="edge-m" d="M 812 620 C 700 600 660 560 684 604" marker-end="url(#a-mem)"/>
+
+  <!-- ================= zone 6: the dashboard ================= -->
+  <rect class="panel" x="880" y="756" width="512" height="118" rx="8"/>
+  <text class="zlabel" x="898" y="780">THE ONLY THING THE FRONTEND TALKS TO</text>
+  <text class="name" x="898" y="804">Dashboard API — Lambda Function URL</text>
+  <text class="role" x="898" y="824">Eight read routes; follower reads for aggregates, current
+    time for the</text>
+  <text class="role" x="898" y="842">approval queue and the provenance replay. One write: the
+    human decision.</text>
+  <text class="mono" x="898" y="864">React · Vite · React Flow genealogy tree · Recharts
+    posteriors</text>
+  <path class="edge" d="M 936 714 L 936 756" marker-end="url(#a)"/>
+
+  <!-- legend -->
+  <rect class="panel" x="48" y="788" width="792" height="86" rx="8"/>
+  <text class="zlabel" x="66" y="812">WHY COCKROACHDB — four things are load-bearing, and only
+    one is vector search</text>
+  <text class="role" x="66" y="836">AS OF SYSTEM TIME gives the provenance replay from MVCC, with
+    no audit table. REGIONAL BY ROW homes each</text>
+  <text class="role" x="66" y="854">incident where it was observed. LOCALITY GLOBAL puts proven
+    playbooks in every region's local read path.</text>
+  <text class="role" x="66" y="872">Serializable-by-default makes FOR UPDATE a correct claim
+    protocol against an at-least-once changefeed.</text>
+</svg>
