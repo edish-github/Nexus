@@ -57,10 +57,11 @@ code alone.
 | Out-of-sample backtest + calibration | Verified live — `make backtest` |
 | Dashboard API (8 read routes, 2 writes) · UI (5 views) | Verified live; UI builds and lints clean |
 | Region survival **configuration** | Verified live — `make region-config`, 5/5 |
+| ccloud CLI used *by agent code* | Verified live — `Guardian.substrate_health()` returns `available: true` from `ccloud cluster list`, under a `CLUSTER_DEVELOPER`-scoped service account |
 | Region survival **demonstrated by killing a node** | Written, **not exercised** — needs Docker running |
-| Bedrock-authored genomes (birth, mutation, merge) | Written and unit-tested; **degrade rather than invent** without credentials |
-| AWS stack: layer, 8 Lambdas, EventBridge, 2 state machines, S3, secrets, CloudWatch | Complete in the repo, **never deployed** |
-| Changefeed → receiver → EventBridge → Step Functions | Complete in the repo, **never created on the cluster** |
+| Bedrock-authored genomes (birth, mutation, merge) | Written and unit-tested; **blocked on account model access**, and degrade rather than invent |
+| AWS stack: layer, 8 Lambdas, EventBridge, 2 state machines, S3, secrets, CloudWatch | **Deployed** — stack `nexus` in `us-east-1`, 47 resources |
+| Changefeed → receiver → EventBridge → Step Functions | **Verified live — exit gate 1 closed.** `INSERT` → changefeed → webhook → `nexus-bus` → Step Functions `SUCCEEDED` across all four agents; duplicate replay is a clean no-op |
 
 ### Backtest — Oracle on windows withheld from the database
 
@@ -103,13 +104,16 @@ being rehearsed, so on a world that has been demoed against they fail and
 
 | Gap | Why |
 |---|---|
-| Region kill not exercised | The Docker daemon was not running on the build machine. `make region-config` proves the configuration; `make region-demo` proves the behaviour and is untested. |
-| Birth, mutation, merge produce nothing | No AWS credentials, so Bedrock is unreachable. They log and decline rather than fabricating a playbook. `make lifecycle` substitutes one seam and stamps `proposed_by: "lifecycle-harness"` on every row. |
-| AWS stack never deployed | `aws`, `sam` and `ccloud` are not installed here. `sam validate --lint` runs in CI. |
+| Region kill not exercised | Not yet rehearsed. `make region-config` proves the configuration live, 5/5; `make region-demo` proves the behaviour and has not been run. |
+| Birth, mutation, merge produce nothing | **Bedrock model access has not been granted for the account** — both Titan V2 and Claude return `ValidationException: Operation not allowed` with IAM verified correct. They log and decline rather than fabricating a playbook. `make lifecycle` substitutes one seam and stamps `proposed_by: "lifecycle-harness"` on every row. |
+| Guardian cannot act in the deployed pipeline | The fleet is a local simulator with no public URL, so `GeneratorUrl` is unset and Guardian reports `no_substrate` rather than claiming a fix it never ran. A tunnel would make the beat work and the claim worse. |
 | 10k-row load and TTL-reap checks | Bulk vector writes run at ~2.6 rows/s over this link and the connection drops before 1k rows. Environment-limited, not design-limited. |
 | Agent Skills | Pre-decided scope cut. The `ccloud` read-only health check remains. |
 | Unprefixed vector index removed | Oracle's neighbourhood query has no category filter by design, so it falls back to a scan and sort. Invisible at 155 snapshots; not at a million. Restoring it costs a second index on every write. |
 | Calibration in the low bucket | Real and visible. Fixing it means reweighting the prior against neighbour similarity, and that is a change worth measuring rather than guessing. |
+| No `make verify` check on the GC window until 18 Aug | `precursor_snapshots` was found inheriting a 75-minute GC window instead of the configured 7 days, after a manual `TRUNCATE` recreated the table and discarded its zone config. The provenance replay kept passing because a replay runs seconds after its decision. Now asserted on both tables, and re-applied by `make seed`. |
+| `config.get_secret` caches, so secret rotation is inert alone | Rotation requires replacing every execution environment. Documented as a required second step in `demo/README.md`. |
+| ccloud unusable inside Lambda | `substrate_health()` shells to the `ccloud` binary and the layer ships only Python wheels, so in Lambda it reports `available: false` honestly. The tool is exercised locally, which is where the demo runs. |
 
 Key locked decisions: **Python 3.12** Lambdas · **AWS SAM** IaC · embedding dim
 **1024** (Titan Text Embeddings V2 default — *not* 1536) · `institutional_playbooks`
