@@ -1,0 +1,40 @@
+---
+title: NEXUS — provenance replay, and the bug that makes it a lie
+---
+sequenceDiagram
+    autonumber
+    participant O as ORACLE
+    participant DB as CockroachDB · MVCC
+    participant D as DIAGNOSTICIAN
+    participant UI as Dashboard
+
+    rect rgb(219, 234, 254)
+    Note over O,DB: decision time
+    O->>DB: BEGIN
+    O->>DB: k-NN over precursor_snapshots → 14 neighbours
+    O->>DB: INSERT prediction (α, β)
+    O->>DB: capture cluster_logical_timestamp() INSIDE the transaction
+    O->>DB: COMMIT
+    Note over O,DB: the timestamp is the decision's, not the row's
+    end
+
+    rect rgb(220, 252, 231)
+    Note over D,DB: minutes later — the world moves on
+    D->>DB: promote the very window this prediction was about<br/>into precursor_snapshots
+    Note over DB: the neighbourhood now contains evidence<br/>that did not exist at decision time
+    end
+
+    rect rgb(254, 249, 195)
+    Note over UI,DB: replay
+    UI->>DB: SELECT … AS OF SYSTEM TIME '<decision ts>'
+    DB-->>UI: the exact 14 neighbours Oracle saw
+    UI->>DB: SELECT … (present tense)
+    DB-->>UI: 14 neighbours, one of them new
+    Note over UI: the two panes DISAGREE — and the disagreement is the proof.<br/>The posterior is unchanged: the conclusion did not depend<br/>on anything learned afterwards.
+    end
+
+    rect rgb(254, 226, 226)
+    Note over UI,DB: the trap we did not fall into
+    Note over DB: crdb_internal_mvcc_timestamp on the prediction row is the<br/>row's LATEST version. Sentinel and Guardian both write to that<br/>row after the decision, so replaying there reads the outcome<br/>back as evidence and reports the panes as identical.
+    Note over UI: A broken proof of this kind looks exactly like a working one.<br/>That is why the correct timestamp is captured in the transaction<br/>and the wrong one is called out in the code.
+    end

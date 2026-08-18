@@ -1,0 +1,67 @@
+---
+title: NEXUS — one prevention, end to end
+---
+sequenceDiagram
+    autonumber
+    participant F as Service fleet
+    participant DB as CockroachDB Cloud
+    participant O as ORACLE
+    participant R as Receiver λ
+    participant EB as EventBridge → Step Functions
+    participant S as SENTINEL
+    participant D as DIAGNOSTICIAN
+    participant G as GUARDIAN
+    participant C as CHRONICLER
+
+    F->>DB: 5-min telemetry → trajectory_text() → VECTOR(1024)
+    Note over DB: SENSORY tier · 2-hour Row-Level TTL
+
+    O->>DB: k-NN over precursor_snapshots (k = 14, similarity ≥ 0.72)
+    DB-->>O: 14 neighbours + their outcomes
+    Note over O: α = neighbours that failed + 1<br/>β = neighbours that recovered + 1<br/>emit only if ≥ 5 matches and mean ≥ 0.60
+    O->>DB: INSERT INTO predictions (α, β, eta, embedding)
+    Note over O,DB: partial unique index makes the dedup a<br/>constraint, not a check-then-insert
+
+    DB->>R: changefeed → webhook POST + Bearer secret
+    Note over DB,R: delivery is at-least-once, by design
+    R->>EB: PutEvents · prediction.created · idempotency_key
+    EB->>S: rule starts the state machine
+
+    S->>DB: SELECT … WHERE prevention_status='pending' FOR UPDATE
+    alt already claimed by an earlier delivery
+        DB-->>S: 0 rows
+        S-->>EB: clean no-op — exactly-once execution
+    else the claim succeeds
+        DB-->>S: row locked → 'preventing'
+        S->>DB: top-8 candidate playbooks by cosine (distance < 0.35)
+        Note over S: Thompson sampling: draw from each Beta posterior,<br/>weight the draw by similarity — a bandit, not a leaderboard
+        S->>DB: INSERT evolution_log('competition') — every draw, win or lose
+    end
+
+    S->>D: winner + evidence bundle
+    D->>DB: promote the sensory window into precursor_snapshots
+    D->>DB: hybrid SQL + vector retrieval of similar incidents
+    Note over D: no incident within 0.80 and no candidate playbook<br/>→ ask Bedrock for a genome → validate → birth or reject
+
+    S->>G: tier decision
+    alt posterior < 0.75
+        G-->>C: shadow — record what would have run, execute nothing
+    else reversible
+        G->>F: apply remediation_steps (idempotent by construction)
+    else irreversible
+        G-->>G: park in the approval tier until a human answers
+    end
+
+    G->>F: watch the target metric for the verification window
+    alt improved beyond ε = 0.02
+        F-->>G: prevented
+    else degraded
+        G->>F: replay inverse_steps in reverse order
+        G->>DB: evolution_log('rollback')
+    else flat
+        F-->>G: inconclusive — a window that showed nothing taught nothing
+    end
+
+    G->>C: outcome
+    C->>DB: growth / mutation / merge / promotion / retirement
+    Note over C,DB: the lifecycle mutation and its evolution_log row<br/>commit in one serializable transaction — or neither does

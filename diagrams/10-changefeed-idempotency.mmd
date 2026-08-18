@@ -1,0 +1,39 @@
+---
+title: NEXUS — at-least-once delivery, exactly-once execution
+---
+sequenceDiagram
+    autonumber
+    participant CF as Changefeed
+    participant R as Receiver λ
+    participant EB as EventBridge
+    participant S1 as Sentinel · execution 1
+    participant S2 as Sentinel · execution 2
+    participant DB as CockroachDB
+
+    Note over CF: the webhook sink retries. That is not a defect<br/>to be worked around — it is the contract.
+    CF->>R: POST prediction P (delivery 1)
+    CF->>R: POST prediction P (delivery 2 — retry)
+    R->>EB: prediction.created · idempotency_key = P
+    R->>EB: prediction.created · idempotency_key = P
+    EB->>S1: start execution
+    EB->>S2: start execution
+
+    par both executions race for the same row
+        S1->>DB: SELECT … WHERE id = P AND prevention_status='pending' FOR UPDATE
+        DB-->>S1: row locked
+        S1->>DB: UPDATE prevention_status='preventing', claimed_by='exec-1'
+        S1->>DB: COMMIT
+    and
+        S2->>DB: SELECT … WHERE id = P AND prevention_status='pending' FOR UPDATE
+        Note over S2,DB: blocks on the lock, then re-reads under<br/>serializable isolation and finds no 'pending' row
+        DB-->>S2: 0 rows
+    end
+
+    S1-->>EB: proceeds — one claim
+    S2-->>EB: duplicate delivery ignored · claimed_by untouched
+
+    Note over S1,S2: make pipeline-concurrency delivers one prediction five times<br/>in parallel: one claim, four clean no-ops.
+
+    rect rgb(254, 226, 226)
+    Note over DB: And if an execution dies after claiming?<br/>The row would sit in 'preventing' forever, holding Oracle's dedup<br/>guard, making that failure permanently unpredictable — a silent<br/>blind spot, worse than the crash.<br/>Chronicler's sweep releases it as 'missed' after 30 minutes.
+    end

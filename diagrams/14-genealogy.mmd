@@ -1,0 +1,50 @@
+---
+title: NEXUS — three real families, read out of the seeded cluster
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+---
+flowchart TB
+    classDef act  fill:#dbeafe,stroke:#1d4ed8,color:#0b1a3a
+    classDef new  fill:#f5f3ff,stroke:#8b5cf6,stroke-dasharray:4 3,color:#210b4a
+    classDef inst fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef ret  fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+    classDef mrg  fill:#fef9c3,stroke:#a16207,color:#3b2606
+
+    subgraph A["connection_pool_exhaustion — an ancestor that failed, and a challenger with nothing to lose"]
+        direction TB
+        A1["<b>Static pool bump</b> · gen 1 · <b>retired</b><br/>6 / 11 → mean 0.37"]
+        A2["<b>Pool bump with connection drain</b> · gen 2<br/>14 / 6 → mean 0.68"]
+        A3["<b>Adaptive pool with breaker</b> · gen 3<br/>17 / 1 → <b>mean 0.90</b> — one trial from promotion"]
+        A4["<b>Breaker-first pool relief</b> · gen 3<br/>6 / 4 → mean 0.58"]
+        A5["<b>Predictive pool pre-scale</b> · gen 4<br/><b>0 / 0 → flat prior</b> · never tried"]
+        A1 --> A2 --> A3 --> A5
+        A2 --> A4
+    end
+
+    subgraph B["memory_leak_oom — the full arc, ending in doctrine"]
+        direction TB
+        B1["<b>Blind rolling restart</b> · gen 1 · <b>retired</b><br/>4 / 9 → mean 0.33"]
+        B2["<b>Drain-then-restart</b> · gen 2<br/>11 / 4 → mean 0.71"]
+        B3["<b>Graceful recycle with headroom</b> · gen 2<br/>9 / 3 → mean 0.71"]
+        B4["<b>Pre-emptive headroom scale</b> · gen 3 · <b>INSTITUTIONAL</b><br/>24 / 1 → mean 0.93 · copied to the GLOBAL table"]
+        B1 --> B2 --> B4
+        B1 --> B3
+    end
+
+    subgraph C["thread_pool_starvation — two siblings that converged"]
+        direction TB
+        C1["<b>Widen thread pool</b> · gen 1<br/>7 / 6 → mean 0.53"]
+        C2["<b>Widen and shed</b> · gen 2 · <b>merged</b><br/>10 / 4"]
+        C3["<b>Widen with retry budget</b> · gen 2 · <b>merged</b><br/>9 / 5"]
+        C4["<b>Canonical starvation relief</b> · gen 3<br/>13 / 2 — neither parent deleted, both stay in the genealogy"]
+        C1 --> C2 --> C4
+        C1 --> C3 --> C4
+    end
+
+    class A2,A3,A4,B2,B3,C1 act
+    class A5 new
+    class A1,B1 ret
+    class B4 inst
+    class C2,C3,C4 mrg

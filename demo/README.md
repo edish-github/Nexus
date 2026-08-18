@@ -8,13 +8,15 @@ something has not, it says so.
 ## 0 · Once, before anything
 
 ```bash
-cp .env.example .env         # then fill in DB_DSN — the CockroachDB Cloud connection string
+cp .env.example .env         # then fill in COCKROACH_DB_URL — the CockroachDB Cloud connection string
 make deps                    # uv sync
 cd frontend && npm ci && cd ..
 ```
 
-`.env` is gitignored and stays that way. `DB_DSN` is the only variable you must
-set for the whole backend to work; everything else has a working default.
+`.env` is gitignored and stays that way. `COCKROACH_DB_URL` is the only variable you
+must set for the whole backend to work; everything else has a working default.
+(That is the name the code reads — `nexus_common.config` falls back to it when
+Secrets Manager is not reachable, which is every local run.)
 
 **Embeddings.** With AWS credentials, `EMBEDDING_PROVIDER=auto` uses Amazon Titan
 Text Embeddings V2. Without them it falls back to a deterministic local embedder

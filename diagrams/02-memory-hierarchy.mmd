@@ -1,0 +1,42 @@
+---
+title: NEXUS — the four memory tiers and what enforces each lifetime
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 460
+    rankSpacing: 60
+---
+flowchart TB
+    classDef tier   fill:#dbeafe,stroke:#1d4ed8,stroke-width:1.5px,color:#0b1a3a
+    classDef rule   fill:#f1f5f9,stroke:#64748b,stroke-width:1px,color:#0f172a
+    classDef gone   fill:#fee2e2,stroke:#b91c1c,stroke-width:1px,color:#450a0a
+    classDef glob   fill:#dcfce7,stroke:#15803d,stroke-width:1.5px,color:#052e16
+
+    S["<b>1 · SENSORY</b> — telemetry_embeddings<br/>every live window, embedded on arrival"]
+    SR["<i>lifetime:</i> 2 hours<br/><b>Row-Level TTL</b> · ttl_job_cron '*/5'<br/>the database does the forgetting"]
+
+    E["<b>2 · EPISODIC</b> — incidents + precursor_snapshots<br/>the windows that turned out to matter"]
+    ER["<i>lifetime:</i> permanent, with a 7-day replayable past<br/><b>gc.ttlseconds = 604800</b><br/>MVCC history is the audit log"]
+
+    P["<b>3 · PROCEDURAL</b> — playbooks<br/>how to act · REGIONAL BY ROW"]
+    PR["<i>lifetime:</i> 90 days of <b>disuse</b><br/>ttl_expiration_expression = 'expires_at'<br/>every trial winds the clock forward"]
+
+    I["<b>4 · INSTITUTIONAL</b> — institutional_playbooks<br/>doctrine · <b>LOCALITY GLOBAL</b>"]
+    IR["<i>lifetime:</i> permanent<br/>entry is by promotion only<br/>read from the local replica in every region"]
+
+    DEAD["<b>retired</b> — status='retired'<br/>kept, never deleted:<br/>the genealogy is drawn from ancestors"]
+
+    S == "Diagnostician promotes the window<br/>and <b>reuses its embedding</b> — Titan is never paid twice" ==> E
+    E -- "k-NN evidence for every prediction" --> P
+    P == "posterior mean &ge; 0.9 over &ge; 10 trials" ==> I
+    P -- "mean &lt; 0.2 over &ge; 5 trials" --> DEAD
+
+    S -.-> SR
+    E -.-> ER
+    P -.-> PR
+    I -.-> IR
+
+    class S,E,P tier
+    class I glob
+    class SR,ER,PR,IR rule
+    class DEAD gone

@@ -1,0 +1,62 @@
+---
+title: NEXUS — the closed loop
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 420
+    nodeSpacing: 45
+    rankSpacing: 55
+---
+flowchart TB
+    classDef substrate fill:#dcfce7,stroke:#15803d,stroke-width:1px,color:#052e16
+    classDef memory    fill:#dbeafe,stroke:#1d4ed8,stroke-width:1.5px,color:#0b1a3a
+    classDef compute   fill:#ffedd5,stroke:#c2410c,stroke-width:1px,color:#3b1206
+    classDef agent     fill:#ede9fe,stroke:#6d28d9,stroke-width:1px,color:#210b4a
+    classDef human     fill:#fef9c3,stroke:#a16207,stroke-width:1px,color:#3b2606
+    classDef model     fill:#fce7f3,stroke:#be185d,stroke-width:1px,color:#3f0a24
+
+    FLEET["<b>SERVICE FLEET</b><br/>4 services · 3 regions · 8 failure archetypes<br/>declarative control API · 20 actions"]
+    TXT["<b>trajectory_text&lpar;&rpar;</b> — the canonical ruler<br/>a window is described by shape, not samples:<br/>trend · level decile · peak · volatility · form"]
+    EMB["<b>Titan Text Embeddings V2</b><br/>VECTOR&lpar;1024&rpar; · vector_cosine_ops"]
+
+    T1[("<b>SENSORY</b> · telemetry_embeddings<br/>Row-Level TTL 2 h — forgetting is a feature")]
+    T2[("<b>EPISODIC</b> · precursor_snapshots<br/>the trailing window <i>before</i> the failure")]
+    T3[("<b>PROCEDURAL</b> · playbooks<br/>REGIONAL BY ROW · no stored fitness")]
+    SIG[("<b>SIGNAL</b> · predictions<br/>the changefeed source table")]
+    AUD[("<b>AUDIT</b> · evolution_log<br/>append-only family history")]
+
+    ORA["<b>ORACLE</b><br/>k-NN over episodic memory, k = 14<br/>Beta posterior over the neighbours' outcomes<br/>silent below 5 matches or mean 0.60"]
+
+    CF["<b>CHANGEFEED</b> → webhook sink<br/>at-least-once · resolved every 10 s"]
+    RCV["<b>RECEIVER</b> Lambda<br/>Bearer secret · Function URL"]
+    BUS["<b>EventBridge</b> · nexus-bus<br/>prediction.created"]
+
+    SEN["<b>SENTINEL</b><br/>FOR UPDATE claim → Thompson sampling → tier gate"]
+    DIA["<b>DIAGNOSTICIAN</b><br/>hybrid SQL + vector RCA · promotes the window · cold-start birth"]
+    GUA["<b>GUARDIAN</b><br/>execute → verification window → inverse steps on degradation"]
+    CHR["<b>CHRONICLER</b><br/>growth · mutation · merge · promotion · retirement"]
+    GATE["<b>HUMAN GATE</b><br/>a step with no inverse never runs unattended"]
+
+    FLEET -- "5-minute telemetry samples" --> TXT
+    TXT --> EMB
+    EMB --> T1
+    T1 == "the live window" ==> ORA
+    T2 -- "the memory it is matched against" --> ORA
+    ORA == "INSERT — the only thing that starts a pipeline" ==> SIG
+    SIG ==> CF ==> RCV ==> BUS
+    BUS == "EventBridge rule starts Step Functions" ==> SEN
+    SEN ==> DIA ==> GUA ==> CHR
+    T3 -. "top-8 candidates by cosine" .-> SEN
+    SEN -. "winner is irreversible" .-> GATE
+    GATE -. "a human decides — and the decision is evidence" .-> GUA
+    GUA == "apply · watch · undo" ==> FLEET
+    DIA -. "promotes the sensory window" .-> T2
+    CHR -. "the population changes" .-> T3
+    CHR -. "one row per transition, same transaction" .-> AUD
+
+    class FLEET substrate
+    class TXT,EMB model
+    class T1,T2,T3,SIG,AUD memory
+    class CF,RCV,BUS compute
+    class ORA,SEN,DIA,GUA,CHR agent
+    class GATE human

@@ -1,0 +1,44 @@
+---
+title: NEXUS — selection is a bandit, not a leaderboard
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+---
+flowchart TB
+    classDef mem  fill:#dbeafe,stroke:#1d4ed8,color:#0b1a3a
+    classDef calc fill:#ede9fe,stroke:#6d28d9,color:#210b4a
+    classDef good fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef warn fill:#fef9c3,stroke:#a16207,color:#3b2606
+    classDef bad  fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+    classDef note fill:#f1f5f9,stroke:#64748b,color:#0f172a
+
+    P["A claimed prediction<br/>posterior Beta&lpar;α, β&rpar; over the matched neighbours"]
+    Q["<b>Candidate retrieval</b><br/>WHERE outcome_category = $1 AND status = 'active'<br/>ORDER BY precursor_embedding &lt;=&gt; $2 LIMIT 8<br/>cosine distance &lt; 0.35"]
+    IDX["served by <b>playbooks_category_status_precursor_idx</b><br/>one prefixed vector-index lookup, not a scan and sort"]
+
+    D["<b>Thompson sampling</b><br/>for each candidate draw θᵢ ~ Beta&lpar;sᵢ+1, fᵢ+1&rpar;<br/>score = θᵢ × similarityᵢ"]
+    WHY["<i>Why not argmax?</i><br/>argmax is a leaderboard. A leaderboard means a newborn<br/>playbook is never selected, never gathers evidence,<br/>and dies by TTL. A zero-trial challenger with a flat prior<br/>beats a 0.9 incumbent's draw roughly one time in ten."]
+    LOG["<b>evolution_log&lpar;'competition'&rpar;</b><br/>every draw is written — winners and losers —<br/>so the competition is inspectable, not asserted"]
+
+    W{"the winner's<br/>posterior mean"}
+    REV{"does every step<br/>declare an inverse?"}
+
+    SH["<b>SHADOW</b> · mean &lt; 0.75<br/>record what would have run<br/>execute nothing · trial weight 0.30"]
+    AUTO["<b>AUTO</b> · reversible<br/>execute now — Guardian can undo it"]
+    APPR["<b>APPROVE</b> · irreversible<br/>write an approvals row and wait<br/>rotate_certificate · prune_disk"]
+
+    P --> Q --> IDX --> D --> LOG --> W
+    D -.-> WHY
+    W -- "&lt; 0.75" --> SH
+    W -- "≥ 0.75" --> REV
+    REV -- "yes" --> AUTO
+    REV -- "no" --> APPR
+
+    class P,Q mem
+    class IDX,LOG,WHY note
+    class D calc
+    class W,REV calc
+    class SH warn
+    class AUTO good
+    class APPR bad

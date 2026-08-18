@@ -1,0 +1,42 @@
+---
+title: NEXUS — multi-region memory, and what each locality buys
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+---
+flowchart TB
+    classDef reg  fill:#dbeafe,stroke:#1d4ed8,stroke-width:1.5px,color:#0b1a3a
+    classDef glob fill:#dcfce7,stroke:#15803d,stroke-width:1.5px,color:#052e16
+    classDef dead fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+    classDef note fill:#f1f5f9,stroke:#64748b,color:#0f172a
+
+    subgraph DBSC["DATABASE nexus · SURVIVE REGION FAILURE"]
+        direction TB
+        R1["<b>aws-us-east-1</b> — PRIMARY REGION"]
+        R2["<b>aws-eu-west-1</b>"]
+        R3["<b>aws-ap-south-1</b>"]
+    end
+
+    RBR["<b>REGIONAL BY ROW</b> — incidents · playbooks<br/>each row is homed in the region that observed it,<br/>in the CockroachDB-managed crdb_region column"]
+    GLB["<b>LOCALITY GLOBAL</b> — institutional_playbooks · backtest_runs<br/>written rarely, read by every region on every decision:<br/>the exact access pattern GLOBAL exists for"]
+    SER["<b>One serializable transaction spans all three</b><br/>which is what makes SELECT … FOR UPDATE a correct<br/>claim protocol against an at-least-once changefeed<br/>rather than an optimistic guess"]
+
+    KILL["<b>a region is lost</b><br/>quorum survives on the remaining two"]
+    OUT["the open transaction still <b>commits</b><br/>no data loss, no maintenance window"]
+
+    R1 --- RBR
+    R2 --- RBR
+    R3 --- GLB
+    DBSC --> SER
+    DBSC -. "region kill" .-> KILL --> OUT
+
+    PROOF["<b>What is proven, and how</b><br/>make region-config — reads the survival goal, the localities and<br/>the real replica spread off the live Cloud cluster, 5/5 checks<br/>make region-demo — a three-node cluster with one region locality<br/>each, killed mid-transaction, because a managed cluster<br/>offers no way to pull its own plug"]
+
+    OUT -.-> PROOF
+
+    class R1,R2,R3 reg
+    class RBR reg
+    class GLB glob
+    class KILL,OUT dead
+    class SER,PROOF note

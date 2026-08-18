@@ -1,0 +1,44 @@
+---
+title: NEXUS — one ruler, or every distance is measured differently
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+---
+flowchart TB
+    classDef raw   fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef canon fill:#fce7f3,stroke:#be185d,stroke-width:1.5px,color:#3f0a24
+    classDef prov  fill:#ffedd5,stroke:#c2410c,color:#3b1206
+    classDef mem   fill:#dbeafe,stroke:#1d4ed8,color:#0b1a3a
+    classDef note  fill:#f1f5f9,stroke:#64748b,color:#0f172a
+    classDef bad   fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+
+    W["<b>A telemetry window</b><br/>{pool_utilization: [0.34 … 0.88], queue_wait_ms: [8 … 240], …}"]
+    T["<b>trajectory_text&lpar;&rpar;</b> — the single canonical serialization<br/>describes the window by <b>shape</b>, quantized against fixed per-metric ranges:<br/>trend · level decile · peak · volatility · form"]
+    WHY["Two windows differing only by jitter serialize <b>identically</b><br/>and therefore embed identically, while two archetypes never collide.<br/>Raw samples would make noise look like a different failure."]
+
+    D{"EMBEDDING_PROVIDER"}
+    BR["<b>bedrock</b> — Amazon Titan Text Embeddings V2<br/>the production path · 1024 dimensions by default, <i>not</i> 1536"]
+    LO["<b>local</b> — deterministic signed feature hashing<br/>over the same canonical text · no network, no credentials"]
+
+    V["<b>VECTOR&lpar;1024&rpar;</b> · vector_cosine_ops · the &lt;=&gt; operator"]
+    S["telemetry_embeddings · precursor_snapshots · playbooks · incidents"]
+    MAN["<b>demo/seed_manifest.json</b> records which provider built the world"]
+    TRAP["<b>They are different vector spaces.</b> A database seeded with one and<br/>queried with the other yields meaningless distances that still <i>look</i><br/>like distances. Switching providers requires a full re-seed — which is<br/>why the manifest exists and why the seeder refuses to be ambiguous."]
+
+    W --> T --> D
+    T -.-> WHY
+    D -- "credentials resolve" --> BR
+    D -- "otherwise, with a warning on every line" --> LO
+    BR --> V
+    LO --> V
+    V --> S
+    S --> MAN
+    MAN -.-> TRAP
+
+    class W raw
+    class T canon
+    class BR,LO,D prov
+    class V,S mem
+    class WHY,MAN note
+    class TRAP bad

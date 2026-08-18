@@ -1,0 +1,108 @@
+---
+title: NEXUS — the memory schema
+---
+erDiagram
+    INCIDENTS ||--o{ PRECURSOR_SNAPSHOTS : "leaves a trail before it"
+    INCIDENTS ||--o{ EVOLUTION_LOG : "triggers"
+    PLAYBOOKS ||--o{ PLAYBOOKS : "parent_id — the family tree"
+    PLAYBOOKS ||--o{ EVOLUTION_LOG : "every transition, one row"
+    PLAYBOOKS ||--o| INSTITUTIONAL_PLAYBOOKS : "promoted into"
+    PLAYBOOKS ||--o{ PREDICTIONS : "applied to"
+    PLAYBOOKS ||--o{ APPROVALS : "the fix a human is asked about"
+    PREDICTIONS ||--o| APPROVALS : "parks here when irreversible"
+    TELEMETRY_EMBEDDINGS ||--o| PRECURSOR_SNAPSHOTS : "promoted, embedding reused"
+
+    TELEMETRY_EMBEDDINGS {
+        uuid id PK
+        text service_name
+        vector1024 embedding "cosine · the sensory tier"
+        jsonb raw_metrics
+        timestamptz expires_at "Row-Level TTL · 2 hours"
+    }
+
+    PRECURSOR_SNAPSHOTS {
+        uuid id PK
+        uuid incident_id FK "null for a window that recovered"
+        text outcome_category "what Oracle is inferring"
+        vector1024 trajectory_embedding "prefixed vector index"
+        boolean led_to_incident "the negatives are what make the floor bite"
+        jsonb metric_digest "quantized shape, not raw samples"
+        timestamptz window_start "the drift only — never the failure"
+    }
+
+    INCIDENTS {
+        uuid id PK
+        text title
+        int severity "1..5"
+        text status "predicted..postmortem"
+        vector1024 symptom_embedding
+        boolean was_prevented
+        int mttr_seconds
+        crdb_region crdb_region "REGIONAL BY ROW"
+    }
+
+    PLAYBOOKS {
+        uuid id PK
+        text name
+        text outcome_category
+        vector1024 precursor_embedding "where it lives in precursor space"
+        jsonb remediation_steps "action, target, params, inverse"
+        jsonb inverse_steps "the rollback program"
+        boolean reversible "false forces the approval tier"
+        int success_count "no stored fitness — only evidence"
+        int failure_count
+        int generation
+        uuid parent_id FK
+        uuid_array lineage "merge refuses relatives"
+        text status "active | retired | merged"
+        timestamptz expires_at "90-day disuse TTL, wound by every trial"
+    }
+
+    INSTITUTIONAL_PLAYBOOKS {
+        uuid id PK
+        uuid source_playbook_id FK
+        vector1024 precursor_embedding
+        timestamptz promoted_at "LOCALITY GLOBAL · local read everywhere"
+    }
+
+    PREDICTIONS {
+        uuid id PK
+        text service_name
+        text predicted_outcome
+        float alpha "neighbours that failed + 1"
+        float beta "neighbours that recovered + 1"
+        int matching_precursor_count
+        vector1024 current_embedding
+        text prevention_status "pending → preventing → prevented"
+        text claimed_by "SELECT FOR UPDATE — exactly-once"
+        timestamptz expires_at "TTL 6 h · changefeed source table"
+    }
+
+    APPROVALS {
+        uuid id PK
+        uuid prediction_id FK "unique WHERE status='pending'"
+        text reason "which step has no inverse"
+        jsonb evidence "the whole bundle, so the card never re-queries"
+        text status "pending | approved | rejected | expired"
+        timestamptz deadline "the decision deadline, not the row's life"
+    }
+
+    EVOLUTION_LOG {
+        uuid id PK
+        text event_type "birth growth mutation competition merge promotion retirement rollback"
+        uuid playbook_id FK
+        float fitness_before "posterior mean, recomputed — never stored on the row"
+        float fitness_after
+        jsonb details "the draws, the evidence, the timestamps"
+    }
+
+    BACKTEST_RUNS {
+        uuid id PK
+        text method "out-of-sample-holdout | leave-one-out"
+        int true_positive
+        int false_positive
+        int false_negative
+        int true_negative
+        jsonb calibration "stated confidence vs realized rate"
+        jsonb detail "every scored window, so a number can be traced"
+    }

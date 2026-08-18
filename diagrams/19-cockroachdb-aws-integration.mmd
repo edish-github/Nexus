@@ -1,0 +1,41 @@
+---
+title: NEXUS — how CockroachDB, AWS and the agents interact
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+    nodeSpacing: 30
+    rankSpacing: 90
+---
+flowchart LR
+    classDef aws  fill:#ffedd5,stroke:#c2410c,stroke-width:1.2px,color:#3b1206
+    classDef ag   fill:#ede9fe,stroke:#6d28d9,stroke-width:1.2px,color:#210b4a
+    classDef crdb fill:#dbeafe,stroke:#1d4ed8,stroke-width:1.2px,color:#0b1a3a
+    classDef hum  fill:#fef9c3,stroke:#a16207,stroke-width:1.2px,color:#3b2606
+    classDef hdr  fill:#f1f5f9,stroke:#64748b,stroke-width:1px,color:#0f172a
+
+    HA["<b>AWS · what runs the agent</b>"]:::hdr
+    HB["<b>THE AGENT</b>"]:::hdr
+    HC["<b>CockroachDB · the memory it thinks with</b>"]:::hdr
+    HA ~~~ HB ~~~ HC
+
+    A1["<b>Lambda</b> + EventBridge schedule"] --> G1["<b>ORACLE</b><br/>predict"] --> C1["<b>Distributed vector index</b><br/>k-NN over precursor_snapshots, k=14<br/>→ INSERT predictions, deduped by a<br/>partial unique index"]
+
+    A2["<b>Step Functions</b> · state 1"] --> G2["<b>SENTINEL</b><br/>claim · compete"] --> C2["<b>Serializable isolation</b><br/>SELECT … FOR UPDATE claim<br/><b>Prefixed vector index</b><br/>top-8 candidates in one lookup"]
+
+    A3["<b>Step Functions</b> · state 2<br/><b>Bedrock</b> · Claude + Titan V2"] --> G3["<b>DIAGNOSTICIAN</b><br/>explain · remember"] --> C3["<b>Hybrid SQL + vector</b> retrieval<br/>promote the sensory window into<br/>episodic memory, reusing its vector"]
+
+    A4["<b>Step Functions</b> · state 3<br/><b>S3</b> artifacts · <b>CloudWatch</b>"] --> G4["<b>GUARDIAN</b><br/>act · verify · undo"] --> C4["<b>ccloud CLI</b> substrate health check<br/>before it changes anything —<br/>a CLUSTER_DEVELOPER service account"]
+
+    A5["<b>Step Functions</b> · state 4<br/><b>Bedrock</b> · Claude"] --> G5["<b>CHRONICLER</b><br/>evolve the memory"] --> C5["<b>One serializable transaction</b> for the<br/>mutation and its audit row<br/><b>LOCALITY GLOBAL</b> promotion<br/><b>Row-Level TTL</b> · 90-day disuse"]
+
+    A6["<b>Lambda Function URL</b><br/>→ <b>EventBridge</b> nexus-bus"] --> G6["<b>RECEIVER</b><br/>the only entry point"] --> C6["<b>Changefeed</b> on predictions →<br/>webhook sink, at-least-once,<br/>Bearer-authenticated"]
+
+    A7["<b>Lambda Function URL</b><br/><b>Secrets Manager</b> at cold start"] --> G7["<b>DASHBOARD</b><br/>read-only"] --> C7["<b>AS OF SYSTEM TIME</b> provenance replay<br/>+ follower_read_timestamp&lpar;&rpar; for<br/>everything that tolerates staleness"]
+
+    A8["<b>Step Functions</b> · approved machine"] --> G8["<b>HUMAN GATE</b><br/>irreversible fixes"] --> C8["<b>REGIONAL BY ROW</b> · <b>SURVIVE REGION FAILURE</b><br/>one transaction across three regions"]
+
+    class A1,A2,A3,A4,A5,A6,A7,A8 aws
+    class G1,G2,G3,G4,G5,G6,G7 ag
+    class G8 hum
+    class C1,C2,C3,C4,C5,C6,C7,C8 crdb

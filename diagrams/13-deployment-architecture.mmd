@@ -1,0 +1,53 @@
+---
+title: NEXUS — what is actually deployed
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+    rankSpacing: 55
+---
+flowchart TB
+    classDef lam  fill:#ffedd5,stroke:#c2410c,color:#3b1206
+    classDef evt  fill:#fce7f3,stroke:#be185d,color:#3f0a24
+    classDef sec  fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+    classDef sto  fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef db   fill:#dbeafe,stroke:#1d4ed8,stroke-width:1.5px,color:#0b1a3a
+    classDef note fill:#f1f5f9,stroke:#64748b,color:#0f172a
+
+    CRDB[("<b>CockroachDB Cloud</b> · nexus-cluster · 3 regions")]
+    CFD["<b>changefeed on predictions</b> → webhook sink · Bearer auth"]
+    RCV["<b>Receiver</b> λ · Function URL — the changefeed's only entry point"]
+    BUS["<b>EventBridge</b> nexus-bus<br/>rule: source = nexus.changefeed · detail-type = prediction.created"]
+    SM1["<b>PipelineStateMachine</b> — Sentinel → Diagnostician → Guardian → Chronicler<br/>retry with backoff and catch on every state"]
+    SM2["<b>ApprovedStateMachine</b> — Guardian → Chronicler<br/>entered only after a human approves"]
+    PIPE["<b>Sentinel · Diagnostician · Guardian · Chronicler</b> λ"]
+    ORA["<b>Oracle</b> λ — scheduled predictor"]
+    DASH["<b>Dashboard</b> λ · Function URL — 8 read routes + 2 control routes, CORS-scoped"]
+    POLL["<b>Poller</b> λ — Plan B, deliberately Enabled: false"]
+
+    LAYER["<b>SharedLayer</b> — nexus_common + psycopg + numpy + pydantic<br/>built for manylinux2014_aarch64, because the functions declare arm64"]
+    SEC["<b>Secrets Manager</b> — nexus/db · nexus/changefeed · nexus/ccloud"]
+    IAM["<b>Four managed policies</b>, attached only where used<br/>DbRead · BedrockInvoke · S3Artifacts · CloudWatchMetrics"]
+    S3["<b>S3</b> ArtifactsBucket — remediation artifacts and evidence bundles"]
+    CW["<b>CloudWatch</b> — NEXUS-development dashboard + structured JSON logs"]
+
+    TLS["<b>The one thing that is not obvious.</b> libpq with sslmode=verify-full and no sslrootcert<br/>looks for ~/.postgresql/root.crt, which cannot exist in Lambda — and sslrootcert=system fails<br/>too, because psycopg's manylinux wheel bundles an OpenSSL whose compiled-in CA path is<br/>absent from the Lambda filesystem. The stored DSN therefore ends with<br/>sslrootcert=/etc/pki/tls/certs/ca-bundle.crt — Amazon Linux's own bundle."]
+
+    CRDB ==> CFD ==> RCV ==> BUS ==> SM1 ==> PIPE
+    SM2 --> PIPE
+    PIPE ==> CRDB
+    ORA ==> CRDB
+    DASH --> CRDB
+    PIPE --> S3
+    PIPE --> CW
+    LAYER -.-> PIPE
+    SEC -.-> PIPE
+    IAM -.-> PIPE
+    SEC -.-> TLS
+
+    class CRDB,CFD db
+    class RCV,PIPE,ORA,DASH,POLL,LAYER lam
+    class BUS,SM1,SM2 evt
+    class SEC,IAM sec
+    class S3,CW sto
+    class TLS note

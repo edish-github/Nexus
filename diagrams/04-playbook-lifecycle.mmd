@@ -1,0 +1,58 @@
+---
+title: NEXUS — the life of a playbook
+---
+stateDiagram-v2
+    direction TB
+
+    [*] --> Born : cold start · a pattern no playbook claims
+
+    Born --> Active : enters on Beta(1, 1) — a flat prior,<br/>which is exactly what makes it competitive
+
+    state "ACTIVE — in the population" as Active
+
+    Active --> Drawn : Sentinel samples every candidate's posterior
+    Drawn --> Active : lost the draw · written to evolution_log anyway
+    Drawn --> Shadow : posterior mean < 0.75
+    Drawn --> Gated : mean ≥ 0.75 but a step has no inverse
+    Drawn --> Applied : mean ≥ 0.75 and every step is reversible
+
+    Gated --> Applied : a human approves
+    Gated --> Shadow : a human rejects · the disagreement is scored too
+
+    Shadow --> Scored : trial weight 0.30 — it was never actually run
+    Applied --> Scored : trial weight 1.00
+
+    Scored --> Grown : the target metric improved past ε = 0.02
+    Scored --> Failed : the fleet degraded · inverses replayed in reverse
+    Scored --> Inconclusive : flat · no counter moved
+
+    Inconclusive --> Active : nothing learned, so nothing is recorded
+
+    Grown --> Active : success_count += 1<br/>expires_at = now() + 90 days
+    Failed --> Active : failure_count += 1
+    Failed --> Mutated : breeds one variant at generation + 1<br/>and only if it has no untried child already
+
+    Mutated --> Active : the child joins with a flat prior<br/>the parent stays active and keeps competing
+
+    Active --> Merged : a sibling inside 0.15 cosine, both means > 0.5,<br/>and provably not a relative
+    Merged --> Active : canonical child inherits min(successes) and max(failures)<br/>both parents survive as status='merged'
+
+    Active --> Institutional : posterior mean ≥ 0.9 over ≥ 10 trials
+    Active --> Retired : posterior mean < 0.2 over ≥ 5 trials
+
+    Institutional --> [*] : copied into the GLOBAL table,<br/>read from a local replica in every region
+    Retired --> [*] : status='retired', never deleted —<br/>the genealogy is drawn from its ancestors
+
+    note right of Born
+        Bedrock authors the genome. Anything failing
+        PlaybookDraft validation is stillborn:
+        logged with its payload, never inserted,
+        never executed.
+    end note
+
+    note right of Retired
+        It breeds on the way down — that is the
+        entire point of the mechanism. expires_at
+        is deliberately left alone: the 90-day clock
+        measures disuse, not disgrace.
+    end note

@@ -1,0 +1,30 @@
+---
+title: NEXUS — every claim, and the command that proves it
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+---
+flowchart LR
+    classDef claim fill:#ede9fe,stroke:#6d28d9,color:#210b4a
+    classDef cmd   fill:#dbeafe,stroke:#1d4ed8,color:#0b1a3a
+    classDef ok    fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef part  fill:#fef9c3,stroke:#a16207,color:#3b2606
+    classDef no    fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+
+    C1["<b>The vector index really serves the query</b>"] --> M1["<code>make verify</code>"] --> E1["vector search with prefix spans,<br/>recall 1.000 against an exact scan · <b>21/21 live</b>"]
+    C2["<b>Predictions are not overfitted</b>"] --> M2["<code>make backtest</code>"] --> E2["precision 0.882 · recall 1.000 on 42 windows<br/>withheld from the database · <b>out-of-sample</b>"]
+    C3["<b>The evidence is replayable</b>"] --> M3["<code>make verify</code> · replay button"] --> E3["AS OF SYSTEM TIME at the decision's own commit<br/>timestamp · the two panes disagree, and that is the proof"]
+    C4["<b>Duplicate delivery cannot double-execute</b>"] --> M4["<code>make pipeline-concurrency</code>"] --> E4["one claim, four clean no-ops"]
+    C5["<b>A bad fix is undone</b>"] --> M5["<code>make pipeline-rollback</code>"] --> E5["the fleet degrades, inverses replay, a variant is bred"]
+    C6["<b>Memory evolves, including dying</b>"] --> M6["<code>make lifecycle</code>"] --> E6["36 assertions · all 8 evolution_log event types"]
+    C7["<b>The pipeline holds under load</b>"] --> M7["<code>make load</code>"] --> E7["three concurrent incident ramps · 7/7 · nothing lost"]
+    C8["<b>The cluster survives a region</b>"] --> M8["<code>make region-config</code>"] --> E8["survival goal, localities and real replica spread<br/>read off the live cluster · <b>5/5</b>"]
+    C8 --> M9["<code>make region-demo</code>"] --> E9["a region killed mid-transaction on a cluster whose<br/>plug is reachable"]
+    C9["<b>The whole story runs</b>"] --> M10["<code>make demo-run</code>"] --> E10["24-check scorecard across all three moments"]
+    C10["<b>The AWS pipeline is deployed, not written</b>"] --> M11["<code>make deploy</code> · <code>make changefeed</code>"] --> E11["INSERT → changefeed → receiver → nexus-bus →<br/>Step Functions SUCCEEDED across all four agents"]
+
+    class C1,C2,C3,C4,C5,C6,C7,C8,C9,C10 claim
+    class M1,M2,M3,M4,M5,M6,M7,M8,M9,M10,M11 cmd
+    class E1,E2,E3,E4,E5,E6,E7,E8,E10,E11 ok
+    class E9 part

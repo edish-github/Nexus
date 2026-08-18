@@ -1,84 +1,269 @@
-# NEXUS — the memory operating system for AI agents
+<div align="center">
 
-> Infrastructure that remembers, predicts, heals — and evolves.
-> Operational knowledge with a family tree: playbooks that are born, compete, mutate, merge, and die.
+# NEXUS
 
-**To run it: [`demo/README.md`](demo/README.md).** Fill in `DB_DSN`, then
-`make seed && make demo-run` prints a 24-check scorecard of the whole story.
+### Darwinian memory evolution for AI agents
 
+**Infrastructure that remembers, predicts, heals — and evolves.**
+Operational knowledge with a family tree: playbooks that are born, compete by Thompson sampling, mutate from their own failure, promote or retire by Darwinian selection.
+
+<br/>
+
+`CockroachDB Cloud · 3 regions · SURVIVE REGION FAILURE`  ·  `AWS Lambda · Step Functions · EventBridge · Bedrock · S3`
+`VECTOR(1024) · vector_cosine_ops`  ·  `Python 3.12 · arm64 · SAM`  ·  `React 19 · Vite`
+
+<br/>
+
+**[Architecture](ARCHITECTURE.md)** · **[Run it](demo/README.md)** · **[Diagram gallery](diagrams/)**
+
+</div>
 
 ---
 
-## Repo layout
+## About in short.
 
+NEXUS inverts that: **retrieval *is* the decision.**
+A telemetry trajectory is embedded and matched against the trajectories of past incidents, and
+the k nearest neighbours' outcomes *are* the parameters of a Beta posterior that decides whether
+to predict, whether to act, and which remediation gets the turn. No language model is in that
+path at all. A model appears in exactly three places, all of them authoring a new playbook
+genome: **birth, mutation, merge.** Everything else is vector search and arithmetic over
+columns — which is why there is a number for it.
+
+```bash
+cp .env.example .env      # fill in COCKROACH_DB_URL
+make seed                 # build the whole world from cold (~4 min)
+make demo-run             # the entire story, headless, with a 24-check scorecard
 ```
-sql/            numbered, idempotent migrations (000_regions → 006_backtest_runs)
-                + changefeed.sql
-scripts/        migrate.py, seed.py (builds the demo world), verify_phase2.py (memory-core
-                gate), pipeline_local.py (the five pipeline scenarios), lifecycle_local.py
-                (the whole playbook lifecycle), backtest.py (the honesty layer),
-                load_local.py (three concurrent incidents), region_demo.py (survival),
-                demo_check.py / demo_run.py (stage the demo, then grade it)
-layers/shared/  Lambda layer: nexus_common {db, bedrock, embeddings, trajectory, steps,
-                log, config} + requirements
-agents/         thin Lambda bodies: oracle, sentinel, diagnostician, guardian, chronicler,
-                receiver (changefeed webhook), poller (fallback path, disabled),
-                dashboard (read-only HTTP API behind a Function URL)
-infra/          SAM template, samconfig, two Step Functions definitions:
-                nexus.asl.json (Sentinel→Diagnostician→Guardian→Chronicler) and
-                approved.asl.json (Guardian→Chronicler, entered after a human approves)
-generator/      synthetic world: archetypes, trajectory synthesis, seeded population and
-                genealogy, live fleet simulator + ramp control API
-tests/          unit tests for the memory core and every agent (no database required)
-demo/           README.md (how to run everything), DEMO_SCRIPT.md, JUDGE_QA.md,
-                architecture.svg, the region-kill compose file
-frontend/       dashboard (React + Vite + Tailwind + Recharts + react-flow);
-                API_CONTRACT.md is the contract with agents/dashboard
-Makefile        one-command ops (seed/verify/test/deploy/migrate/live/…)
+
+---
+
+## The closed loop
+
+```mermaid
+---
+title: NEXUS — the closed loop
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 420
+    nodeSpacing: 45
+    rankSpacing: 55
+---
+flowchart TB
+    classDef substrate fill:#dcfce7,stroke:#15803d,stroke-width:1px,color:#052e16
+    classDef memory    fill:#dbeafe,stroke:#1d4ed8,stroke-width:1.5px,color:#0b1a3a
+    classDef compute   fill:#ffedd5,stroke:#c2410c,stroke-width:1px,color:#3b1206
+    classDef agent     fill:#ede9fe,stroke:#6d28d9,stroke-width:1px,color:#210b4a
+    classDef human     fill:#fef9c3,stroke:#a16207,stroke-width:1px,color:#3b2606
+    classDef model     fill:#fce7f3,stroke:#be185d,stroke-width:1px,color:#3f0a24
+
+    FLEET["<b>SERVICE FLEET</b><br/>4 services · 3 regions · 8 failure archetypes<br/>declarative control API · 20 actions"]
+    TXT["<b>trajectory_text&lpar;&rpar;</b> — the canonical ruler<br/>a window is described by shape, not samples:<br/>trend · level decile · peak · volatility · form"]
+    EMB["<b>Titan Text Embeddings V2</b><br/>VECTOR&lpar;1024&rpar; · vector_cosine_ops"]
+
+    T1[("<b>SENSORY</b> · telemetry_embeddings<br/>Row-Level TTL 2 h — forgetting is a feature")]
+    T2[("<b>EPISODIC</b> · precursor_snapshots<br/>the trailing window <i>before</i> the failure")]
+    T3[("<b>PROCEDURAL</b> · playbooks<br/>REGIONAL BY ROW · no stored fitness")]
+    SIG[("<b>SIGNAL</b> · predictions<br/>the changefeed source table")]
+    AUD[("<b>AUDIT</b> · evolution_log<br/>append-only family history")]
+
+    ORA["<b>ORACLE</b><br/>k-NN over episodic memory, k = 14<br/>Beta posterior over the neighbours' outcomes<br/>silent below 5 matches or mean 0.60"]
+
+    CF["<b>CHANGEFEED</b> → webhook sink<br/>at-least-once · resolved every 10 s"]
+    RCV["<b>RECEIVER</b> Lambda<br/>Bearer secret · Function URL"]
+    BUS["<b>EventBridge</b> · nexus-bus<br/>prediction.created"]
+
+    SEN["<b>SENTINEL</b><br/>FOR UPDATE claim → Thompson sampling → tier gate"]
+    DIA["<b>DIAGNOSTICIAN</b><br/>hybrid SQL + vector RCA · promotes the window · cold-start birth"]
+    GUA["<b>GUARDIAN</b><br/>execute → verification window → inverse steps on degradation"]
+    CHR["<b>CHRONICLER</b><br/>growth · mutation · merge · promotion · retirement"]
+    GATE["<b>HUMAN GATE</b><br/>a step with no inverse never runs unattended"]
+
+    FLEET -- "5-minute telemetry samples" --> TXT
+    TXT --> EMB
+    EMB --> T1
+    T1 == "the live window" ==> ORA
+    T2 -- "the memory it is matched against" --> ORA
+    ORA == "INSERT — the only thing that starts a pipeline" ==> SIG
+    SIG ==> CF ==> RCV ==> BUS
+    BUS == "EventBridge rule starts Step Functions" ==> SEN
+    SEN ==> DIA ==> GUA ==> CHR
+    T3 -. "top-8 candidates by cosine" .-> SEN
+    SEN -. "winner is irreversible" .-> GATE
+    GATE -. "a human decides — and the decision is evidence" .-> GUA
+    GUA == "apply · watch · undo" ==> FLEET
+    DIA -. "promotes the sensory window" .-> T2
+    CHR -. "the population changes" .-> T3
+    CHR -. "one row per transition, same transaction" .-> AUD
+
+    class FLEET substrate
+    class TXT,EMB model
+    class T1,T2,T3,SIG,AUD memory
+    class CF,RCV,BUS compute
+    class ORA,SEN,DIA,GUA,CHR agent
+    class GATE human
 ```
+
+<sub>All 18 diagrams in this repository have `.mmd` sources and rendered SVGs in **[`diagrams/`](diagrams/)**.</sub>
+
+---
+
+## AWS & CockroachDB tools — what the agent actually does with them
+
+### CockroachDB — two tools, used by agent code
+
+**1 · Distributed Vector Indexing** — this is the entire retrieval path, not a feature demo.
+
+- `VECTOR(1024)` columns on five tables, indexed with `vector_cosine_ops` so `<=>` is
+  index-accelerated.
+- **Prefixed** vector indexes (`(outcome_category, status, embedding)`) so the hybrid
+  `WHERE … ORDER BY embedding <=>` query is served by **one lookup**, not a scan and sort.
+- `make verify` asserts `EXPLAIN` shows a `vector search` node with `prefix spans` **and**
+  that recall is **1.000 against an exact scan** — because an approximate index returning
+  plausible neighbours is indistinguishable from a correct one until you check.
+
+**2 · ccloud CLI (agent-ready)** — invoked *by agent code*, not by a human at a terminal.
+
+- `Guardian.substrate_health()` shells out to `ccloud cluster list --output json` **before it
+  changes anything**, parses the JSON, and returns `available: true` with the real cluster and
+  its three regions.
+- The service account it runs under is scoped **`CLUSTER_DEVELOPER`** — read and connect, no
+  cluster mutation — and the argv is read-only again.
+- It reports `available: false` **with the real reason** when the CLI is absent, which is what
+  it does inside Lambda, where there is no binary to shell to. A health check that cannot fail
+  is not a health check.
+
+And four more CockroachDB capabilities that are load-bearing rather than decorative:
+**changefeeds → webhook** drive the whole pipeline · **`AS OF SYSTEM TIME`** gives provenance
+replay for free out of MVCC · **Row-Level TTL** makes forgetting a property of the database ·
+**`REGIONAL BY ROW` + `LOCALITY GLOBAL` + serializable isolation** are what make `FOR UPDATE` a
+correct claim protocol against at-least-once delivery.
+
+*Not used: the Managed MCP Server and the Agent Skills repo. Both are listed in
+[the gaps table](#known-gaps-and-why).*
+
+### AWS — what runs where
+
+| Service | What it does here |
+|---|---|
+| **Lambda** | 8 functions, Python 3.12, arm64, one shared layer. Thin agents; no agent holds state. |
+| **Step Functions** | The prevention pipeline, and a second machine entered only after a human approves. Retry with backoff and catch on every state. |
+| **EventBridge** | `nexus-bus` — the changefeed's landing zone and the pipeline's trigger. |
+| **Bedrock** | Titan Text Embeddings V2 for every vector; Claude authors genomes for birth, mutation and merge — every draft validated before it can be written. |
+| **S3** | Remediation artifacts and evidence bundles. |
+| **CloudWatch** | A dashboard per environment, plus structured JSON logs carrying incident / prediction / playbook ids. |
+| **Secrets Manager** | DSN, changefeed shared secret, ccloud key — read at cold start, never in code or git history. |
+
+---
+
+## What makes it different
+
+<table>
+<tr><td width="33%" valign="top">
+
+### It predicts with a posterior
+
+Confidence is `Beta(α, β)` over the matched neighbours' outcomes — **both parameters stored**,
+so "3 of 3 agree" never collapses into the same number as "30 of 30". The credible interval
+survives the trip to the UI.
+
+</td><td width="33%" valign="top">
+
+### It can prove what it knew
+
+Every decision records its own commit timestamp, and `AS OF SYSTEM TIME` replays the exact
+evidence. The live pane **disagrees** — a neighbour was promoted afterwards — and the posterior
+is unchanged. That disagreement *is* the proof.
+
+</td><td width="33%" valign="top">
+
+### Its memory evolves
+
+Thompson sampling, not argmax, so a zero-trial challenger gets a turn. Failure breeds a variant.
+Convergent siblings merge into one canonical child. Proven doctrine is promoted to `GLOBAL`.
+Losers retire — after breeding on the way down.
+
+</td></tr>
+</table>
+
+---
+
+## Every claim, and the command that proves it
+
+```mermaid
+---
+title: NEXUS — every claim, and the command that proves it
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+---
+flowchart LR
+    classDef claim fill:#ede9fe,stroke:#6d28d9,color:#210b4a
+    classDef cmd   fill:#dbeafe,stroke:#1d4ed8,color:#0b1a3a
+    classDef ok    fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef part  fill:#fef9c3,stroke:#a16207,color:#3b2606
+    classDef no    fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+
+    C1["<b>The vector index really serves the query</b>"] --> M1["<code>make verify</code>"] --> E1["vector search with prefix spans,<br/>recall 1.000 against an exact scan · <b>21/21 live</b>"]
+    C2["<b>Predictions are not overfitted</b>"] --> M2["<code>make backtest</code>"] --> E2["precision 0.882 · recall 1.000 on 42 windows<br/>withheld from the database · <b>out-of-sample</b>"]
+    C3["<b>The evidence is replayable</b>"] --> M3["<code>make verify</code> · replay button"] --> E3["AS OF SYSTEM TIME at the decision's own commit<br/>timestamp · the two panes disagree, and that is the proof"]
+    C4["<b>Duplicate delivery cannot double-execute</b>"] --> M4["<code>make pipeline-concurrency</code>"] --> E4["one claim, four clean no-ops"]
+    C5["<b>A bad fix is undone</b>"] --> M5["<code>make pipeline-rollback</code>"] --> E5["the fleet degrades, inverses replay, a variant is bred"]
+    C6["<b>Memory evolves, including dying</b>"] --> M6["<code>make lifecycle</code>"] --> E6["36 assertions · all 8 evolution_log event types"]
+    C7["<b>The pipeline holds under load</b>"] --> M7["<code>make load</code>"] --> E7["three concurrent incident ramps · 7/7 · nothing lost"]
+    C8["<b>The cluster survives a region</b>"] --> M8["<code>make region-config</code>"] --> E8["survival goal, localities and real replica spread<br/>read off the live cluster · <b>5/5</b>"]
+    C8 --> M9["<code>make region-demo</code>"] --> E9["a region killed mid-transaction on a cluster whose<br/>plug is reachable"]
+    C9["<b>The whole story runs</b>"] --> M10["<code>make demo-run</code>"] --> E10["24-check scorecard across all three moments"]
+    C10["<b>The AWS pipeline is deployed, not written</b>"] --> M11["<code>make deploy</code> · <code>make changefeed</code>"] --> E11["INSERT → changefeed → receiver → nexus-bus →<br/>Step Functions SUCCEEDED across all four agents"]
+
+    class C1,C2,C3,C4,C5,C6,C7,C8,C9,C10 claim
+    class M1,M2,M3,M4,M5,M6,M7,M8,M9,M10,M11 cmd
+    class E1,E2,E3,E4,E5,E6,E7,E8,E10,E11 ok
+    class E9 part
+```
+
+---
 
 ## Status
 
-Everything below is either verified against the live three-region cluster or
-labelled with what is missing. Nothing is marked complete on the strength of the
-code alone.
+Everything below is either verified against the live three-region cluster or labelled with what
+is missing. **Nothing is marked complete on the strength of the code alone.**
 
 | Area | State |
 |---|---|
-| Multi-region schema, vector indexes, TTLs, zone configs | Verified live — `make verify`, 21/21 on a freshly seeded world |
-| Migration runner + schema smoke test | Verified live |
-| Synthetic world generator, embedding pipeline, seeded memory | Verified live — 155 snapshots, 30 playbooks, deterministic |
-| Live fleet simulator + ramp control API | Verified live |
-| Oracle · Sentinel · Diagnostician · Guardian · Chronicler | Verified live — `make demo-run`, 24/24 |
-| Unit suite | 242 tests, no database required · ruff clean · frontend builds and lints clean |
-| Playbook lifecycle: birth, growth, shadow, mutation, merge, promotion, retirement | Verified live — `make lifecycle`, 36/36, all 8 event types |
-| Human-in-the-loop approval gate (read, decide, dispatch) | Verified live — `make pipeline-approval` |
-| Concurrency: duplicate delivery, and three simultaneous incidents | Verified live — `make pipeline-concurrency`, `make load` 7/7 |
-| Out-of-sample backtest + calibration | Verified live — `make backtest` |
-| Dashboard API (8 read routes, 2 writes) · UI (5 views) | Verified live; UI builds and lints clean |
-| Region survival **configuration** | Verified live — `make region-config`, 5/5 |
-| ccloud CLI used *by agent code* | Verified live — `Guardian.substrate_health()` returns `available: true` from `ccloud cluster list`, under a `CLUSTER_DEVELOPER`-scoped service account |
-| Region survival **demonstrated by killing a node** | Written, **not exercised** — needs Docker running |
-| Bedrock-authored genomes (birth, mutation, merge) | Written and unit-tested; **blocked on account model access**, and degrade rather than invent |
-| AWS stack: layer, 8 Lambdas, EventBridge, 2 state machines, S3, secrets, CloudWatch | **Deployed** — stack `nexus` in `us-east-1`, 47 resources |
-| Changefeed → receiver → EventBridge → Step Functions | **Verified live — exit gate 1 closed.** `INSERT` → changefeed → webhook → `nexus-bus` → Step Functions `SUCCEEDED` across all four agents; duplicate replay is a clean no-op |
+| Multi-region schema, vector indexes, TTLs, zone configs |  Verified live — `make verify`, **21/21** on a freshly seeded world |
+| Synthetic world generator, embedding pipeline, seeded memory |  Verified live — 155 snapshots, 30 playbooks, deterministic |
+| Oracle · Sentinel · Diagnostician · Guardian · Chronicler |  Verified live — `make demo-run`, **24/24** |
+| Playbook lifecycle: birth, growth, shadow, mutation, merge, promotion, retirement | Verified live — `make lifecycle`, **36/36**, all 8 event types |
+| Human-in-the-loop approval gate |  Verified live — `make pipeline-approval` |
+| Concurrency: duplicate delivery, three simultaneous incidents |  Verified live — `make pipeline-concurrency`, `make load` **7/7** |
+| Out-of-sample backtest + calibration |  Verified live — `make backtest` |
+| Dashboard API (8 reads, 2 controls) · UI (5 views) |  Verified live; builds and lints clean |
+| Region survival **configuration** |  Verified live — `make region-config`, **5/5** |
+| ccloud CLI used **by agent code** |  Verified live — `substrate_health()` returns `available: true` under a `CLUSTER_DEVELOPER`-scoped service account |
+| AWS stack: layer, 8 Lambdas, EventBridge, 2 state machines, S3, secrets, CloudWatch |  **Deployed** — stack `nexus` in `us-east-1`, 47 resources |
+| Changefeed → receiver → EventBridge → Step Functions |  **Verified live.** `INSERT` → changefeed → webhook → `nexus-bus` → Step Functions `SUCCEEDED` across all four agents; duplicate replay is a clean no-op |
+| Unit suite |  **242 tests**, no database required · ruff clean · frontend builds and lints clean |
+| Region survival **demonstrated by killing a node** |  Written, **not yet exercised** |
+| Bedrock-authored genomes (birth, mutation, merge) |  Written and unit-tested; **blocked on account model access** — and degrade rather than invent |
 
-### Backtest — Oracle on windows withheld from the database
+### The backtest — Oracle scored on windows withheld from the database
 
-`make backtest` embeds the held-out set in `demo/backtest_set.jsonl` and runs
-Oracle's own retrieval and emit gate against it. Out-of-sample: those windows were
-never written to `precursor_snapshots`. A window Oracle declines to predict on
-counts as a negative, because that is what silence means in production.
+`make backtest` embeds the held-out set in `demo/backtest_set.jsonl` and runs Oracle's own
+retrieval and emit gate against it. **Out-of-sample**: those windows were never written to
+`precursor_snapshots`. A window Oracle declines to predict on counts as a negative, because
+that is what silence means in production.
 
 | | |
 |---|---|
-| Held out | 42 windows — 30 incidents, 12 negatives |
+| Held out | **42 windows** — 30 incidents, 12 negatives |
 | Memory scored against | 155 precursor snapshots |
 | Precision · recall | **0.882** · **1.000** |
 | Confusion | TP 30 · FP 4 · FN 0 · TN 8 |
 | Category named correctly | 32 of 34 predictions |
-| Warning available | median 80 min of precursor pattern before the failure |
-| Imminence | median stated ETA 5 min on a window with 0 min left |
+| Warning available | median **80 min** of precursor pattern before the failure |
 
 Calibration — stated confidence against the rate that materialized:
 
@@ -89,331 +274,159 @@ Calibration — stated confidence against the rate that materialized:
 | 0.80–0.90 | 4 | 0.828 | 0.750 | −0.078 |
 | 0.90–1.00 | 20 | 0.938 | 1.000 | +0.062 |
 
-Read it honestly: well behaved above 0.80, and **over-confident in the 0.60–0.70
-bucket** on a small sample. Recall of 1.000 is the easiest possible case — the
-held-out incidents are complete precursor windows, and eight synthetic archetypes
-are far more separable than real telemetry. The number worth trusting is precision.
+**Read it honestly.** Well behaved above 0.80, and **over-confident in the 0.60–0.70 bucket** on
+a small sample. Recall of 1.000 is the *easiest possible case* — the held-out incidents are
+complete precursor windows, and eight synthetic archetypes are far more separable than real
+telemetry. The number worth trusting is precision. This table is on the dashboard, not just in
+this file.
 
-Two of `make verify`'s twenty-one checks are properties of the *seeded world* rather
-than of the code — a playbook one success from promotion, and a challenger with
-zero trials. Rehearsal consumes both, because the system genuinely learns from
-being rehearsed, so on a world that has been demoed against they fail and
-`make demo-reset` restores them. `make demo-check` exists to tell you which it is.
+> Two of `make verify`'s twenty-one checks are properties of the *seeded world* rather than of
+> the code — a playbook one success from promotion, and a challenger with zero trials.
+> Rehearsal consumes both, because the system genuinely learns from being rehearsed.
+> `make demo-check` tells you which it is; `make demo-reset` restores them.
 
 ### Known gaps, and why
 
 | Gap | Why |
 |---|---|
-| Region kill not exercised | Not yet rehearsed. `make region-config` proves the configuration live, 5/5; `make region-demo` proves the behaviour and has not been run. |
-| Birth, mutation, merge produce nothing | **Bedrock model access has not been granted for the account** — both Titan V2 and Claude return `ValidationException: Operation not allowed` with IAM verified correct. They log and decline rather than fabricating a playbook. `make lifecycle` substitutes one seam and stamps `proposed_by: "lifecycle-harness"` on every row. |
-| Guardian cannot act in the deployed pipeline | The fleet is a local simulator with no public URL, so `GeneratorUrl` is unset and Guardian reports `no_substrate` rather than claiming a fix it never ran. A tunnel would make the beat work and the claim worse. |
-| 10k-row load and TTL-reap checks | Bulk vector writes run at ~2.6 rows/s over this link and the connection drops before 1k rows. Environment-limited, not design-limited. |
-| Agent Skills | Pre-decided scope cut. The `ccloud` read-only health check remains. |
-| Unprefixed vector index removed | Oracle's neighbourhood query has no category filter by design, so it falls back to a scan and sort. Invisible at 155 snapshots; not at a million. Restoring it costs a second index on every write. |
-| Calibration in the low bucket | Real and visible. Fixing it means reweighting the prior against neighbour similarity, and that is a change worth measuring rather than guessing. |
-| No `make verify` check on the GC window until 18 Aug | `precursor_snapshots` was found inheriting a 75-minute GC window instead of the configured 7 days, after a manual `TRUNCATE` recreated the table and discarded its zone config. The provenance replay kept passing because a replay runs seconds after its decision. Now asserted on both tables, and re-applied by `make seed`. |
-| `config.get_secret` caches, so secret rotation is inert alone | Rotation requires replacing every execution environment. Documented as a required second step in `demo/README.md`. |
-| ccloud unusable inside Lambda | `substrate_health()` shells to the `ccloud` binary and the layer ships only Python wheels, so in Lambda it reports `available: false` honestly. The tool is exercised locally, which is where the demo runs. |
-
-Key locked decisions: **Python 3.12** Lambdas · **AWS SAM** IaC · embedding dim
-**1024** (Titan Text Embeddings V2 default — *not* 1536) · `institutional_playbooks`
-is a separate **GLOBAL** table (simpler to demo) · vector indexes use
-`vector_cosine_ops` so the `<=>` cosine operator is index-accelerated · every
-telemetry window is embedded through the single canonical serialization in
-`nexus_common.trajectory` · remediation steps are `{action, target, params,
-inverse}`, validated by `nexus_common.steps` before anything is written or run.
+| **Region kill not yet exercised** | `make region-config` proves the configuration live, 5/5. `make region-demo` proves the behaviour on a three-node cluster whose plug is reachable — a managed cluster offers no way to pull its own. |
+| **Birth, mutation and merge** | **Bedrock model access has not been granted for the account.** Titan V2 and Claude both return `ValidationException: Operation not allowed` with IAM verified correct. They log and decline rather than fabricating a playbook. `make lifecycle` substitutes one seam and stamps `proposed_by: "lifecycle-harness"` on every row — never `"bedrock"`. |
+| **Guardian cannot act in the deployed pipeline** | The fleet is a local simulator with no public URL, so `GeneratorUrl` is unset and Guardian reports `no_substrate` rather than claiming a fix it never ran. A tunnel would make the beat work and the claim worse. |
+| **Agent Skills** | Pre-decided scope cut. |
+| **Unprefixed vector index removed** | Oracle's neighbourhood query has no category filter *by design* — the category is what it is inferring — so it falls back to a scan and sort. Invisible at 155 snapshots; not at a million. Restoring it costs a second index on every write. |
+| **Calibration in the low bucket** | Real and visible. Fixing it means reweighting the prior against neighbour similarity, and that is a change worth measuring rather than guessing. |
+| **10k-row load and TTL-reap checks** | Bulk vector writes run at ~2.6 rows/s over this link. Environment-limited, not design-limited. |
+| **`config.get_secret` caches** | Rotation is inert until every execution environment is replaced. Documented as a *required* second step in [`demo/README.md`](demo/README.md). |
+| **ccloud unusable inside Lambda** | It shells to a binary the layer does not ship, so in Lambda it reports `available: false` with the real reason. Exercised locally, which is where the demo runs. |
 
 ---
 
-## Prerequisites
+## Quickstart
+
+### Prerequisites
 
 ```bash
-# tooling
-brew install aws-sam-cli awscli uv   # or the platform equivalent
-
-# local python deps (Python 3.12) for the migration/seed/verify scripts, plus ruff/pytest
-make deps                            # uv sync
-
-cp .env.example .env                 # then fill in COCKROACH_DB_URL + CHANGEFEED_SHARED_SECRET
+brew install aws-sam-cli awscli uv          # or the platform equivalent
+make deps                                    # uv sync
+cp .env.example .env                         # then fill in COCKROACH_DB_URL
 ```
 
 `nexus_common` ships to Lambda as a layer, so it is not installed into the venv;
-`pyproject.toml` puts `layers/shared/python` on the path for pytest and the
-scripts do the same via `scripts/_env.py`.
+`pyproject.toml` puts `layers/shared/python` on the path for pytest, and the scripts do the
+same via `scripts/_env.py`.
 
-The dashboard has its own toolchain:
+### The cluster (manual — these happen in CockroachDB Cloud)
+
+1. Provision a **3-region** cluster using regions that also exist in AWS
+   (`us-east-1`, `eu-west-1`, `ap-south-1` are assumed).
+2. Create the `nexus` database and a least-privilege app user — **not** admin.
+3. `ccloud`: create a service account + API key scoped **`CLUSTER_DEVELOPER`** for Guardian's
+   health check. Store it in the `nexus/ccloud` secret.
+4. Edit the region names in `sql/000_regions.sql` to match your cluster.
+
+> **Single-region fallback:** comment out the `ADD REGION` / `SURVIVE REGION FAILURE` lines in
+> `000_regions.sql` and the `LOCALITY` clauses in `001_schema.sql`.
+
+### Build the world
 
 ```bash
-make dashboard                       # read API on :8787 (the Lambda handler over HTTP)
-cp frontend/.env.example frontend/.env
-make ui                              # Vite dev server on :5173
+make migrate          # applies 000 → 006, idempotently
+make seed             # migrate, then build the entire demo world from cold (~4 min)
+make verify           # 21 checks against the live cluster
+make backtest         # score Oracle on withheld windows and store the run
+make test             # 242 unit tests, no database required
 ```
 
-`make dashboard` runs `agents/dashboard/app.py` — the same module the deployed
-Function URL runs — so the UI is never developed against a different
-implementation than it ships against.
+`make seed` is deterministic and destructive in the right way: it **`DELETE`s** and rebuilds
+(never `TRUNCATE` — that discards zone configs), re-asserts `sql/002_zone_configs.sql`, and is
+therefore also `make demo-reset`.
 
-`predictions` is populated by Oracle, so run `make pipeline` (or `make live`
-alongside the deployed Oracle schedule) to give the dashboard something to show.
-Between runs the table empties itself — predictions carry a 6-hour Row-Level TTL
-— and the dashboard is built for that: the Overview centre panel falls back to
-the most recent prevented row in `incidents`, and every other panel shows a
-designed empty state naming the table it consulted. Nothing is faked to fill the
-gap — see `frontend/README.md`.
+### See it work
+
+```bash
+make demo-run                # the whole three-moment story, headless and graded
+make demo-run-3              # three clean runs from three clean worlds — the exit gate
+```
+
+Individual beats:
+
+```bash
+make pipeline                # ramp → predict → claim → compete → execute → prevented
+make pipeline-rollback       # the bad fix wins, degrades the fleet, is rolled back
+make pipeline-approval       # an irreversible fix waits for a human, who approves it
+make pipeline-novel          # a pattern no playbook claims — the cold-start path
+make pipeline-concurrency    # five deliveries of one prediction, one execution
+make lifecycle               # birth → growth → failure → mutation → merge → promotion
+make load                    # three concurrent incident ramps; nothing is lost
+```
+
+### Watch it on a screen
+
+```bash
+make live                    # the synthetic fleet + ramp control API   :8000
+make dashboard               # the dashboard read API                   :8787
+make ui                      # Vite dev server                          :5173
+```
+
+`make dashboard` runs `agents/dashboard/app.py` — **the same module the deployed Function URL
+runs** — so the UI is never developed against a different implementation than it ships against.
+
+Everything on screen is a column value or named arithmetic over column values. Where the
+database has no answer, the panel names the table it consulted and shows an em dash. Nothing is
+faked to fill the gap.
+
+### Deploy
+
+```bash
+make secrets                 # prints what to put in Secrets Manager
+make deploy                  # sam build (container) + sam deploy, one command
+make outputs                 # receiver URL, bus name, state machine ARNs, bucket
+make changefeed              # CREATE CHANGEFEED FOR TABLE predictions INTO 'webhook-…'
+```
+
+Full deployment notes — including the Lambda TLS trust-store problem and why **rotating a
+secret is two steps, not one** — are in [`demo/README.md`](demo/README.md#5--deploy-to-aws).
+
 
 ---
 
-## 1. CockroachDB cluster (manual, in CockroachDB Cloud)
+## Repository layout
 
-These steps happen in the Cloud console / `ccloud` CLI — they can't be scripted from here:
-
-1. Provision a **3-region** cluster. Use regions that also exist in AWS
-   (defaults assumed here: `us-east-1`, `eu-west-1`, `ap-south-1`).
-2. **Tier check** — confirm your tier supports all of: changefeeds, vector
-   indexes, multi-region localities, per-table zone configs, Row-Level TTL.
-   `sql/002_zone_configs.sql` (per-table `gc.ttlseconds`) and enterprise
-   changefeeds need a Dedicated/Advanced tier. If any is missing, escalate the
-   tier now — everything downstream assumes them.
-3. Create the `nexus` database and a least-privilege app user (`nexus_app`, no admin).
-4. Download the CA cert; verify TLS: `cockroach sql --url "$COCKROACH_DB_URL" -e "SELECT 1"`.
-5. `ccloud` CLI: create a **read-only** service account + API key for Guardian
-   (RBAC: cluster read, no mutations). Store the key in the `nexus/ccloud` secret.
-6. Enable the **Managed MCP Server** for the cluster; confirm read-only + audit
-   logging defaults; test from Claude Code/Cursor with a `list tables` query.
-
-Then set up multi-region + the schema from this repo:
-
-```bash
-# 000_regions.sql sets PRIMARY REGION + ADD REGION + SURVIVE REGION FAILURE.
-# Edit the region names in sql/000_regions.sql to match your cluster first.
-make migrate          # applies 000 → 002, idempotently
-make seed-smoke       # seed rows + hybrid vector query + AOST query
 ```
-
-> Single-region / local demo fallback: comment out the `ADD REGION` /
-> `SURVIVE REGION FAILURE` lines in `000_regions.sql` and the `LOCALITY …`
-> clauses in `001_schema.sql`. `incidents`/`playbooks` are `REGIONAL BY ROW`
-> (their region lives in the CockroachDB-managed `crdb_region` column — read it
-> as `crdb_region::STRING`); `institutional_playbooks` is `GLOBAL`.
-
-## 2. Schema
-
-`make migrate` applies, in order:
-
-| file | what |
-|---|---|
-| `000_regions.sql` | primary + 2 regions, `SURVIVE REGION FAILURE` (vector-index and rangefeed cluster settings are on by default in CockroachDB Cloud; the statements are left commented for self-hosted clusters) |
-| `001_schema.sql`  | 7 tables (incidents, precursor_snapshots, playbooks, institutional_playbooks GLOBAL, predictions, telemetry_embeddings, evolution_log), vector indexes (`vector_cosine_ops`), secondary indexes, Row-Level TTLs, localities |
-| `002_zone_configs.sql` | 7-day `gc.ttlseconds` on `precursor_snapshots` and `predictions` for AOST provenance replay |
-| `003_localities.sql` | forces `REGIONAL BY ROW` on `incidents` and `playbooks` — `CREATE TABLE IF NOT EXISTS` drops the `LOCALITY` clause when the table predates `ADD REGION`, leaving them `REGIONAL BY TABLE` with no `crdb_region` column |
-| `004_vector_prefix_indexes.sql` | prefixed vector indexes (`(outcome_category, embedding)` and `(outcome_category, status, embedding)`) so the hybrid filtered k-NN queries are served by one index lookup. Each is an index backfill and runs as an async schema-change job — allow a few minutes |
-
-`make seed-smoke` exercises the schema end to end: it seeds throwaway rows, runs a
-category-filtered cosine k-NN query, checks the planner picks the vector index, and
-runs both an `AS OF SYSTEM TIME` and a follower-read query before cleaning up.
-
-## 3. The memory core
-
-```bash
-make seed             # migrate, then build the entire demo world from cold
-make verify           # the Phase 2 exit gate (see below)
-make test             # unit tests, no database needed
-make live             # synthetic fleet + ramp control API on :8000
+ARCHITECTURE.md    the deep technical document — 18 diagrams, every design decision
+diagrams/          .mmd sources + rendered SVG for every diagram in the docs
+sql/               numbered idempotent migrations, 000_regions → 006_backtest_runs
+layers/shared/     the Lambda layer: nexus_common {db, bedrock, embeddings, trajectory,
+                   steps, posterior, metrics, fleet_client, log, config}
+agents/            thin Lambda bodies: oracle, sentinel, diagnostician, guardian,
+                   chronicler, receiver, poller, dashboard
+infra/             SAM template, samconfig, two Step Functions definitions
+generator/         the synthetic world: archetypes, trajectories, seeded genealogy,
+                   the live fleet simulator and its ramp control API
+scripts/           migrate · seed · verify · pipeline · lifecycle · backtest · load ·
+                   region_demo · demo_check · demo_run · dashboard_local
+tests/             242 unit tests — no database required
+frontend/          React 19 + Vite + Tailwind + Recharts + react-flow, five views
+demo/              runbook, demo script, judge Q&A, region-kill compose file
+Makefile           one command per claim
 ```
-
-`make seed` writes 150 incidents, 190 precursor snapshots (150 positive, 40
-negative), 30 playbooks across four generations, one promoted institutional
-playbook, and ~185 `evolution_log` events. It is deterministic: the same seed
-rebuilds the identical world, which is what makes `make demo-reset` restore the
-exact state the demo was rehearsed against.
-
-Fifty incidents and twenty negatives are **withheld from the database** and
-written to `demo/backtest_set.jsonl`. The Phase 7 backtest runs against those, so
-its precision and recall numbers are measured on windows the seeded memory has
-never seen.
-
-`telemetry_embeddings` is intentionally left empty by the seed — it has a 2-hour
-TTL, so seeding it would be seeding something that evaporates. `make live` fills
-it through the same ingestion path real telemetry would use:
-
-```bash
-curl -XPOST localhost:8000/ramp \
-  -d '{"service":"payments","archetype":"connection_pool_exhaustion","speed":1}'
-curl localhost:8000/fleet
-```
-
-### Embedding provider
-
-Embeddings go through `nexus_common.embeddings`, which has two backends:
-
-| `EMBEDDING_PROVIDER` | Backend |
-|---|---|
-| `bedrock` | Amazon Titan Text Embeddings V2 — the production path |
-| `local` | a deterministic signed feature-hashing embedder over the same canonical text; no network, so a world can be built and tested without AWS credentials |
-| `auto` (default) | `bedrock` when AWS credentials resolve, otherwise `local` with a warning |
-
-**They are different vector spaces.** A database seeded with one and queried with
-the other yields meaningless distances, so `demo/seed_manifest.json` records which
-provider built the current world. Switching providers means re-running `make seed`.
-
-### `make verify` — the Phase 2 exit gate
-
-Seven checks against the live cluster:
-
-1. the hybrid `WHERE category … ORDER BY embedding <=>` query is served by a
-   `vector search` node with `prefix spans`, not a scan and sort
-2. held-out precursor windows retrieve neighbours of their own archetype
-3. a prediction's evidence, re-read `AS OF SYSTEM TIME` its commit timestamp
-   after the underlying table has been mutated, is byte-identical — and the
-   mutation is verified to have moved the present-tense answer first
-4. the dashboard's aggregate resolves against `follower_read_timestamp()`,
-   applied with `SET TRANSACTION AS OF SYSTEM TIME` so one timestamp covers the
-   whole statement
-5. the staged demo beats are properties of the seeded data: two merge-ready
-   pairs inside `distance < 0.15`, a promotion candidate at posterior mean
-   0.900, a zero-trial challenger, a bad playbook still above the retirement
-   line, retired ancestors and merged parents preserved rather than deleted
-6. k-NN latency with 10k rows in the sensory tier (`make verify-full`)
-7. row-level TTL actually reaps an expired row (`make verify-full`; the TTL job
-   cron on that table is `*/5`, so it waits)
-
-## 4. The prevention pipeline
-
-```bash
-make pipeline               # ramp → predict → claim → compete → execute → prevented
-make pipeline-rollback      # the bad fix wins, degrades the fleet, is rolled back
-make pipeline-novel         # a pattern no playbook claims — the cold-start path
-make pipeline-concurrency   # five deliveries of one prediction, one execution
-```
-
-Step Functions is not deployed on a laptop, so `scripts/pipeline_local.py` plays
-its part: it starts the synthetic fleet in-process, ramps a service, feeds the
-sensory tier, and calls Sentinel → Diagnostician → Guardian → Chronicler in the
-state machine's order. Everything else is real — the same agent code, the same
-queries, against the same cluster.
-
-**Oracle** matches the live telemetry window against `precursor_snapshots` (k=14)
-and emits a prediction whose confidence is a Beta posterior over the matched
-neighbours' outcomes — `alpha` = neighbours that failed + 1, `beta` = neighbours
-that recovered + 1. Both are stored, so the credible interval survives the trip.
-It stays silent below 5 close neighbours or a 0.60 posterior mean.
-
-**Sentinel** claims the prediction with `SELECT … FOR UPDATE` (duplicate
-changefeed deliveries become clean no-ops), retrieves the top-8 candidate
-playbooks by vector similarity, and selects by **Thompson sampling** — sampling
-each Beta posterior rather than taking the argmax, which is the only reason a
-zero-trial challenger ever gets a turn. Every draw is written to `evolution_log`.
-The tier then decides: shadow below 0.75 confidence, auto if the winner is
-reversible, approval (an `approvals` row) if it is not.
-
-**Guardian** executes against the fleet control API, watches the target metric
-for a verification window, and on degradation runs the inverses in reverse —
-each one reverting the exact step it undoes rather than being replayed as a
-fresh action. Steps are idempotent by construction: the action vocabulary is
-declarative, so a retry that re-applies a step already in desired state is a
-no-op. "Flat" is reported as inconclusive, never as success.
-
-**Diagnostician** promotes the trailing sensory window into `precursor_snapshots`
-— reusing the embedding rather than paying Titan twice — retrieves similar
-incidents, and on a genuinely unprecedented pattern asks Bedrock for a playbook.
-Anything failing `PlaybookDraft` validation is rejected outright: a malformed
-genome is stillborn, logged, never inserted, never executed.
-
-**Chronicler** turns the result into memory. Growth applies the trial and winds
-the 90-day disuse clock; a rollback breeds a variant at `generation+1` with a
-flat prior while the parent stays active; two siblings inside 0.15 cosine with
-both posterior means above 0.5 are replaced by one canonical child that inherits
-`min(successes)`/`max(failures)` — the most conservative reading of the evidence
-that still transfers, so a merge can never claim more competence than was
-demonstrated. Above 0.9 over ten trials a playbook is copied into the GLOBAL
-`institutional_playbooks`; below 0.2 over five it retires.
-
-No function in `agents/chronicler/app.py` writes to `evolution_log`. Each returns
-the rows it earned and one caller inserts them alongside the mutations in a
-single serializable transaction, so a lifecycle change cannot reach the database
-without its log row.
-
-## 5. The playbook lifecycle
-
-```bash
-make lifecycle              # birth → growth → failure → mutation → merge → promotion
-```
-
-`scripts/lifecycle_local.py` drives one family through every transition against
-the live cluster in a probe category of its own, asserting `evolution_log` after
-each step and deleting the probe on the way out. 36 assertions; all six event
-types written.
-
-Mutation and merge need a reasoning model, so the harness substitutes
-Chronicler's single `_generate` seam and lets the substitution show: every row it
-writes carries `proposed_by: "lifecycle-harness"`, never `"bedrock"`. The genome
-still passes the same `PlaybookDraft` validation. Without credentials the
-production path degrades honestly — `make pipeline-rollback` reports that no
-variant was bred rather than inventing one.
-
-Shadow scoring settles the two halves of a shadow record separately. The
-prediction becomes `missed` or `false_alarm`; the playbook is scored only when
-there is something real to compare it against, and never merely because the
-predicted failure failed to arrive. `success_count` is an integer and a shadow
-trial is worth 0.3, so the fraction accrues in the append-only log rather than in
-a column and banks a whole trial every 3⅓ observations.
-
-## 6. AWS stack and the changefeed pipeline
-
-```bash
-make deploy           # sam build (container) + sam deploy — one command, whole stack
-make outputs          # prints the receiver Function URL, bus name, state machine ARN, bucket
-make secrets          # prints the commands to populate the 3 placeholder secrets
-```
-
-The stack creates: the `nexus-shared` layer, all 7 Lambdas, the `nexus-bus`
-EventBridge bus + a `prediction.created` rule → the Step Functions pipeline,
-the S3 artifacts bucket, three Secrets Manager placeholders, per-Lambda
-least-privilege IAM (no `*` resource policies), and a `NEXUS-<env>` CloudWatch
-dashboard. Then wire the changefeed:
-
-```bash
-# 1) populate secrets (see `make secrets`) — DB dsn, changefeed shared secret, ccloud key
-# 2) edit sql/changefeed.sql: paste the receiver URL from `make outputs` and the shared secret
-make changefeed       # CREATE CHANGEFEED FOR TABLE predictions INTO 'webhook-…'
-```
-
-**End-to-end pipeline test:**
-
-```sql
-INSERT INTO predictions (service_name, causal_pattern, predicted_outcome,
-                         predicted_severity, alpha, beta, current_embedding, predicted_eta)
-VALUES ('payments','pool-creep','connection_pool_exhaustion',3, 12,2,
-        (SELECT trajectory_embedding FROM precursor_snapshots LIMIT 1), now()+INTERVAL '50 min');
-```
-
-Within ~2s: changefeed fires → receiver Lambda publishes to `nexus-bus` →
-EventBridge rule starts a Step Functions execution → Sentinel→…→Chronicler log
-lines in CloudWatch. `make logs-receiver` tails the receiver.
-
-- **Duplicate-delivery check:** POST the same changefeed payload twice; the
-  receiver publishes both, each carrying an idempotency key. The `SELECT ... FOR
-  UPDATE` claim that turns the second into a no-op belongs to Sentinel and is
-  not implemented yet.
-- **Plan B:** if the webhook sink misbehaves, enable the `PollerFunction`
-  schedule (currently `Enabled: false` in `infra/template.yaml`) — a 1-minute
-  poll on `predictions WHERE prevention_status='pending'` that publishes the
-  same events.
 
 ---
-
-## Security
-
-No credentials in code or git history · secrets in Secrets Manager, read at cold
-start · per-Lambda IAM, no wildcard resources · MCP read-only + audit logging ·
-ccloud service account read-only · webhook authenticated via `Bearer` shared
-secret. Every Bedrock proposal is validated against `nexus_common.steps.PlaybookDraft`
-before it can be written or executed: an unknown action, a missing target or a
-malformed step is logged with its payload and rejected, never inserted.
 
 ## Teardown
 
 ```bash
 make destroy          # sam delete
-# drop the changefeed job first if needed: SHOW CHANGEFEED JOBS; CANCEL JOB <id>;
+# drop the changefeed job first if needed:  SHOW CHANGEFEED JOBS;  CANCEL JOB <id>;
 ```
+
+---
+
+<div align="center">
+
+**Licensed MIT.** See [`LICENSE`](LICENSE).
+
+*Every number in this README came out of a command in this repository.
+Where something is unverified, it says so.*
+
+</div>

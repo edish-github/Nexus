@@ -1,0 +1,57 @@
+---
+title: NEXUS — what happens when things go wrong
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+---
+flowchart LR
+    classDef fail fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+    classDef resp fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef why  fill:#f1f5f9,stroke:#64748b,color:#0f172a
+
+    F1["The changefeed delivers twice"]
+    R1["FOR UPDATE claim · the second is a clean no-op<br/><code>make pipeline-concurrency</code>"]
+
+    F2["An execution dies after claiming"]
+    R2["Chronicler's sweep releases it as 'missed' after 30 min,<br/>on every pipeline run and on a 5-minute schedule"]
+    W2["Otherwise the row holds Oracle's dedup guard forever and that<br/>failure becomes permanently unpredictable — a silent blind spot,<br/>worse than the crash that caused it."]
+
+    F3["The fix makes things worse"]
+    R3["Inverses replayed in reverse · a variant bred at generation + 1<br/><code>make pipeline-rollback</code>"]
+
+    F4["Nothing moves during verification"]
+    R4["Reported <b>inconclusive</b> · no counter moves either way"]
+
+    F5["Bedrock is unreachable"]
+    R5["Birth, mutation and merge report 'no proposal produced'.<br/>The pipeline continues. Nothing is invented."]
+
+    F6["No fleet is reachable"]
+    R6["Guardian reports <b>no_substrate</b> rather than a fix it never ran"]
+
+    F7["A region is lost"]
+    R7["SURVIVE REGION FAILURE · the open transaction still commits<br/><code>make region-config</code> · <code>make region-demo</code>"]
+
+    F8["A serializable retry, 40001"]
+    R8["tx_retry with backoff · model calls moved outside transactions<br/>after <code>make load</code> found a real one"]
+
+    F9["A human never answers the approval"]
+    R9["The request expires into a shadow record and is still scored"]
+
+    F10["The dashboard's database read blocks"]
+    R10["DB_STATEMENT_TIMEOUT_MS bounds every read — one panel<br/>degrades and names the table, instead of the request hanging"]
+
+    F1 --> R1
+    F2 --> R2 --> W2
+    F3 --> R3
+    F4 --> R4
+    F5 --> R5
+    F6 --> R6
+    F7 --> R7
+    F8 --> R8
+    F9 --> R9
+    F10 --> R10
+
+    class F1,F2,F3,F4,F5,F6,F7,F8,F9,F10 fail
+    class R1,R2,R3,R4,R5,R6,R7,R8,R9,R10 resp
+    class W2 why

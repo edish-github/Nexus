@@ -1,0 +1,50 @@
+---
+title: NEXUS — trust boundaries and least privilege
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+---
+flowchart TB
+    classDef trust   fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef bound   fill:#fef9c3,stroke:#a16207,color:#3b2606
+    classDef untrust fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+    classDef ctl     fill:#dbeafe,stroke:#1d4ed8,color:#0b1a3a
+    classDef note    fill:#f1f5f9,stroke:#64748b,color:#0f172a
+
+    subgraph U["UNTRUSTED — content a model produced"]
+        direction TB
+        GEN["A genome proposed by Bedrock<br/>birth · mutation · merge"]
+    end
+
+    subgraph V["THE ONE GATE — nexus_common.steps.PlaybookDraft"]
+        direction TB
+        VAL["pydantic, extra='forbid'<br/>action must be one of 20 · target required · 1–12 steps<br/>an inverse must itself be a known action"]
+        REJ["<b>Rejected</b> — unknown action, missing target, invented field,<br/>prose instead of JSON. Logged with its payload.<br/>A malformed genome is stillborn: never inserted, never executed."]
+    end
+
+    subgraph T["TRUSTED — only validated structure reaches these"]
+        direction TB
+        DBW["INSERT INTO playbooks"]
+        EXE["Guardian executes against the fleet"]
+    end
+
+    CRED["<b>Credentials</b><br/>Secrets Manager, read at cold start, cached per environment<br/>nothing in code, nothing in git history<br/>.env is gitignored and stays that way"]
+    ROT["<b>Rotation is two steps, not one.</b> get_secret is @functools.cache'd and<br/>the pool is a module global, so a warm environment serves the old value<br/>forever. Writing a new version has no effect until every function is cycled."]
+
+    IAMP["<b>Per-function IAM</b> — four managed policies, attached only where used<br/>DbRead: secretsmanager:GetSecretValue on three named secret ARNs<br/>BedrockInvoke: InvokeModel on the two model ARNs<br/>S3Artifacts: Get/Put on the bucket, not on S3<br/>CloudWatchMetrics: PutMetricData, which has no resource-level scope"]
+    DEPLOY["<b>Deploy identity</b> — a scoped IAM user, not root keys<br/>CloudFormation limited to stack/nexus/*, the artifact bucket pinned<br/>so no second managed stack is needed"]
+    WEBH["<b>Webhook</b> — Bearer shared secret on the changefeed sink<br/>the receiver rejects anything else before parsing a byte"]
+    CC["<b>ccloud</b> — a service account scoped CLUSTER_DEVELOPER<br/>read and connect, no cluster mutation, read-only again in the argv"]
+    SQLU["<b>Database</b> — a least-privilege app user, never admin"]
+
+    GEN --> VAL
+    VAL -- "fails" --> REJ
+    VAL -- "passes" --> DBW --> EXE
+    CRED -.-> ROT
+
+    class GEN untrust
+    class VAL,REJ bound
+    class DBW,EXE trust
+    class CRED,IAMP,DEPLOY,WEBH,CC,SQLU ctl
+    class ROT note

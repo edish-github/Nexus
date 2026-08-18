@@ -1,0 +1,46 @@
+---
+title: NEXUS — act, verify, undo
+config:
+  flowchart:
+    curve: basis
+    wrappingWidth: 700
+---
+flowchart TB
+    classDef act  fill:#ede9fe,stroke:#6d28d9,color:#210b4a
+    classDef good fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef bad  fill:#fee2e2,stroke:#b91c1c,color:#450a0a
+    classDef warn fill:#fef9c3,stroke:#a16207,color:#3b2606
+    classDef note fill:#f1f5f9,stroke:#64748b,color:#0f172a
+
+    A["<b>Bind and validate</b><br/>parse_steps&lpar;&rpar; against the pydantic schema ·<br/>bind the {service} placeholder to the prediction's service"]
+    IDEM["<b>Idempotent by construction</b><br/>the vocabulary is declarative — scale_connection_pool<br/><i>to</i> a size, never <i>by</i> an amount. Re-applying a step<br/>already in its desired state changes nothing."]
+    B["<b>Execute</b> against the fleet control API<br/>steps applied in order, keyed by action + params"]
+    C["<b>Verification window</b><br/>poll the target metric every 5 s for 45 s<br/>ε = 0.02 of the metric's span"]
+    D{"what did the<br/>metric do?"}
+
+    OK["<b>PREVENTED</b><br/>improvement &gt; ε<br/>prediction → 'prevented'"]
+    FLAT["<b>INCONCLUSIVE</b><br/>movement ≤ ε<br/>Chronicler moves <b>no counter</b>"]
+    BADD["<b>DEGRADED</b><br/>the fix made it worse"]
+
+    RB["<b>Rollback</b><br/>replay inverse_steps in <i>reverse</i> order<br/>each inverse reverts the exact step it undoes,<br/>rather than being replayed as a fresh action"]
+    RBW["Replaying the inverse as a fresh action would leave<br/>the fleet carrying <i>two</i> remediations instead of none."]
+    EV["<b>evolution_log&lpar;'rollback'&rpar;</b> + a variant bred at generation + 1"]
+    FLATW["A window that showed nothing taught nothing.<br/>Recording it either way would be inventing evidence —<br/>and counting flat as a win is how a system convinces<br/>itself a playbook works when it does nothing at all."]
+
+    NOSUB["<b>no_substrate</b><br/>GENERATOR_URL unset — Guardian refuses to report<br/>a fix it never ran, rather than claiming success"]
+
+    A --> B --> C --> D
+    A -.-> IDEM
+    D -- "improved" --> OK
+    D -- "flat" --> FLAT
+    D -- "degraded" --> BADD
+    BADD --> RB --> EV
+    RB -.-> RBW
+    FLAT -.-> FLATW
+    B -. "no fleet reachable" .-> NOSUB
+
+    class A,B,C,D act
+    class OK good
+    class FLAT warn
+    class BADD,RB,EV bad
+    class IDEM,RBW,FLATW,NOSUB note
