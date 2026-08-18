@@ -278,9 +278,11 @@ def survival_proof() -> int:
     before = local_sql("SELECT count(*) FROM crdb_internal.gossip_nodes WHERE is_live")[0][0]
     say(f"   {before} live nodes, one per region")
 
+    survivor_dsn = LOCAL_DSN.replace(":26257", ":26258")
+
     # The transaction stays open across the kill. Autocommit off, and the read
     # takes row locks exactly as Sentinel's claim does.
-    conn = psycopg.connect(LOCAL_DSN, connect_timeout=10)
+    conn = psycopg.connect(survivor_dsn, connect_timeout=10)
     conn.autocommit = False
     started = time.time()
     candidates = conn.execute(
@@ -296,14 +298,18 @@ def survival_proof() -> int:
     say(f"   {VICTIM} is down")
 
     # Read from a surviving node: the cluster must still answer.
-    survivor_dsn = LOCAL_DSN.replace(":26257", ":26258")
-    try:
-        live = local_sql("SELECT count(*) FROM crdb_internal.gossip_nodes WHERE is_live",
-                         dsn=survivor_dsn, timeout=20)[0][0]
-        say(f"   surviving nodes report {live} live")
-        check.that(int(live) < int(before), "the cluster noticed the region is gone")
-    except psycopg.Error as e:
-        check.that(False, "a surviving node still answers queries", str(e)[:120])
+    live = before
+    for _ in range(15):
+        try:
+            live = local_sql("SELECT count(*) FROM crdb_internal.gossip_nodes WHERE is_live",
+                             dsn=survivor_dsn, timeout=20)[0][0]
+            if int(live) < int(before):
+                break
+        except psycopg.Error:
+            pass
+        time.sleep(1)
+    say(f"   surviving nodes report {live} live")
+    check.that(int(live) < int(before), "the cluster noticed the region is gone")
 
     # Now finish the transaction that was already open when the region died.
     winner = max(candidates, key=lambda c: (c[2] + 1) / (c[2] + c[3] + 2))

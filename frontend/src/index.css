@@ -172,3 +172,34 @@ body {
 .react-flow__attribution {
   display: none;
 }
+
+/* Dark mode styling for ReactFlow Controls (Zoom buttons) */
+.react-flow__controls {
+  background: var(--color-nx-raised) !important;
+  border: 1px solid var(--color-nx-line-strong) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5) !important;
+  overflow: hidden !important;
+}
+
+.react-flow__controls-button {
+  background: var(--color-nx-raised) !important;
+  border-bottom: 1px solid var(--color-nx-line) !important;
+  color: var(--color-nx-text-2) !important;
+  fill: var(--color-nx-text-2) !important;
+  width: 28px !important;
+  height: 28px !important;
+}
+
+.react-flow__controls-button:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: var(--color-nx-text) !important;
+  fill: var(--color-nx-text) !important;
+}
+
+.react-flow__controls-button svg {
+  fill: currentColor !important;
+  width: 14px !important;
+  height: 14px !important;
+}
+

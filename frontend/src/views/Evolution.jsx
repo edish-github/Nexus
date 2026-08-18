@@ -23,40 +23,46 @@ const LEGEND = [
   ['retired', 'retired'],
 ]
 
-/** A playbook. Colour comes from the API's resolved `class`, never re-derived. */
+/** A playbook node in the evolution tree. */
 function PlaybookNode({ data, selected }) {
   const color = CLASS_COLOR[data.node.class] ?? CLASS_COLOR.retired
   const node = data.node
   return (
     <div
-      className="flex h-full w-full flex-col gap-1.5 rounded-md border px-2.5 py-2 transition-colors"
+      className="flex h-full w-full flex-col gap-1.5 rounded-lg border px-3 py-2.5 transition-all shadow-md"
       style={{
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
-        borderColor: selected ? color : 'rgba(255,255,255,.09)',
-        background: selected ? 'rgba(255,255,255,.06)' : 'var(--color-nx-raised)',
-        boxShadow: selected ? `0 0 0 3px color-mix(in srgb, ${color} 22%, transparent)` : 'none',
-        opacity: node.status === 'active' ? 1 : 0.55,
+        borderColor: selected ? color : 'rgba(255,255,255,.14)',
+        background: selected ? 'rgba(255,255,255,.09)' : 'var(--color-nx-raised)',
+        boxShadow: selected ? `0 0 14px color-mix(in srgb, ${color} 30%, transparent)` : 'none',
+        opacity: node.status === 'active' ? 1 : 0.65,
       }}
     >
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
-      <div className="flex items-center gap-1.5">
-        <span className="h-[5px] w-[5px] shrink-0 rounded-full" style={{ background: color }} />
-        <span className="nx-num text-[9px] text-nx-faint">g{node.generation}</span>
-        <span className="nx-num ml-auto text-[10px]" style={{ color }}>
+      <div className="flex items-center gap-2">
+        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
+        <span className="nx-num text-[10px] font-semibold text-nx-faint">g{node.generation}</span>
+        <span className="nx-label text-[8px] text-nx-faint-2 uppercase">{node.class}</span>
+        <span className="nx-num ml-auto text-[12px] font-bold tracking-tight" style={{ color }}>
           {fixed(node.posterior_mean, 2)}
         </span>
       </div>
       <div
-        className="truncate text-[11px] leading-tight"
-        style={{ color: node.status === 'active' ? 'var(--color-nx-text-2)' : 'var(--color-nx-dim)' }}
+        className="font-medium text-[11.5px] leading-tight text-nx-text-2 overflow-hidden text-ellipsis"
+        style={{
+          display: '-webkit-box',
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: 'vertical',
+          color: node.status === 'active' ? 'var(--color-nx-text)' : 'var(--color-nx-dim)',
+        }}
         title={node.name}
       >
         {node.name}
       </div>
-      <div className="mt-auto flex items-center gap-1.5">
-        <Meter value={node.posterior_mean} color={color} height={2} />
-        <span className="nx-num shrink-0 text-[8.5px] text-nx-faint-2">{node.trials}t</span>
+      <div className="mt-auto flex items-center gap-2 pt-1">
+        <Meter value={node.posterior_mean} color={color} height={3} />
+        <span className="nx-num shrink-0 text-[9.5px] text-nx-faint-2 font-medium">{node.trials}t</span>
       </div>
       <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
     </div>
@@ -214,7 +220,7 @@ function Genealogy({ nodes, edges }) {
   )
 
   const onInit = useCallback(() => {
-    window.setTimeout(() => fitView({ padding: 0.12, minZoom: 0.55, duration: 300 }), 0)
+    window.setTimeout(() => fitView({ padding: 0.25, minZoom: 0.4, maxZoom: 1.2, duration: 300 }), 0)
   }, [fitView])
 
   return (
@@ -224,16 +230,16 @@ function Genealogy({ nodes, edges }) {
       nodeTypes={NODE_TYPES}
       onInit={onInit}
       fitView
-      fitViewOptions={{ padding: 0.12, minZoom: 0.55 }}
-      minZoom={0.2}
-      maxZoom={1.6}
+      fitViewOptions={{ padding: 0.25, minZoom: 0.4, maxZoom: 1.2 }}
+      minZoom={0.1}
+      maxZoom={1.8}
       proOptions={{ hideAttribution: true }}
       nodesDraggable={false}
       nodesConnectable={false}
       elementsSelectable
       className="bg-nx-bg"
     >
-      <Background color="rgba(255,255,255,.07)" gap={26} size={1} />
+      <Background color="rgba(255,255,255,.08)" gap={28} size={1} />
       <Controls showInteractive={false} className="!bottom-4 !left-4" />
     </ReactFlow>
   )

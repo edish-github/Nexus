@@ -34,26 +34,29 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def _dispatch(self, method: str) -> None:
-        parsed = urlparse(self.path)
-        length = int(self.headers.get("content-length") or 0)
-        body = self.rfile.read(length).decode() if length else ""
-        event = {
-            "requestContext": {"http": {"method": method, "path": parsed.path}},
-            "rawPath": parsed.path,
-            "queryStringParameters": {
-                k: ",".join(v) for k, v in parse_qs(parsed.query).items()
-            },
-            "body": body,
-            "isBase64Encoded": False,
-        }
-        result = dashboard.handler(event)
-        payload = (result.get("body") or "").encode()
-        self.send_response(result["statusCode"])
-        for key, value in (result.get("headers") or {}).items():
-            self.send_header(key, value)
-        self.send_header("content-length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            parsed = urlparse(self.path)
+            length = int(self.headers.get("content-length") or 0)
+            body = self.rfile.read(length).decode() if length else ""
+            event = {
+                "requestContext": {"http": {"method": method, "path": parsed.path}},
+                "rawPath": parsed.path,
+                "queryStringParameters": {
+                    k: ",".join(v) for k, v in parse_qs(parsed.query).items()
+                },
+                "body": body,
+                "isBase64Encoded": False,
+            }
+            result = dashboard.handler(event)
+            payload = (result.get("body") or "").encode()
+            self.send_response(result["statusCode"])
+            for key, value in (result.get("headers") or {}).items():
+                self.send_header(key, value)
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except Exception as e:
+            print(f"Error dispatching {method} {self.path}: {e}", flush=True)
 
     def do_GET(self) -> None:  # noqa: N802
         self._dispatch("GET")

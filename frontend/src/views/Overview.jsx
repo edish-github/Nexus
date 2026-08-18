@@ -32,6 +32,7 @@ import {
 } from '../components/primitives'
 import { PosteriorChart } from '../components/PosteriorChart'
 import { Sparkline } from '../components/Sparkline'
+import { TrajectoryChart } from '../components/TrajectoryChart'
 
 export function Overview({ overview, onNavigate }) {
   const { data, error, loading, refresh } = overview
@@ -89,7 +90,7 @@ export function Overview({ overview, onNavigate }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-[minmax(0,1fr)_360px] items-start gap-4">
+      <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-4">
         <CentrePanel centre={data?.centre} loading={loading} ramp={ramp} onOpen={onNavigate} />
         <div className="flex flex-col gap-4">
           <BacktestPanel backtest={data?.backtest} loading={loading} />
@@ -182,7 +183,12 @@ function CentrePanel({ centre, loading, ramp, onOpen }) {
       ) : centre.kind === 'last_prevention' ? (
         <IncidentEvidence incident={centre.incident} />
       ) : (
-        <PredictionEvidence prediction={centre.prediction} pipeline={centre.pipeline} />
+        <PredictionEvidence
+          prediction={centre.prediction}
+          pipeline={centre.pipeline}
+          neighbors={centre.neighbors}
+          trajectory={centre.trajectory}
+        />
       )}
     </Panel>
   )
@@ -249,10 +255,10 @@ function Pipeline({ stages }) {
   )
 }
 
-function PredictionEvidence({ prediction, pipeline }) {
+function PredictionEvidence({ prediction, pipeline, neighbors, trajectory }) {
   if (!prediction) return null
   return (
-    <>
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-start gap-4 px-5 pt-4 pb-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -313,10 +319,66 @@ function PredictionEvidence({ prediction, pipeline }) {
         </div>
       </div>
 
+      <div className="grid flex-1 grid-cols-[1fr_240px] gap-5 border-t border-nx-line px-5 py-4">
+        <div className="flex min-w-0 flex-col">
+          {trajectory ? (
+            <TrajectoryChart trajectory={trajectory} />
+          ) : (
+            <p className="mt-2 text-[11px] leading-relaxed text-nx-faint">
+              The 2-hour sensory TTL has expired this service&rsquo;s window, or the fleet
+              generator is not running. The posterior above was still built from it.
+            </p>
+          )}
+        </div>
+
+        <div className="min-w-0">
+          <div className="flex items-baseline gap-2">
+            <Label>Retrieved</Label>
+            <span className="nx-num text-[10px] text-nx-faint-2">
+              k={num(prediction.matching_precursor_count)} · cosine
+            </span>
+          </div>
+          <div className="mt-2 flex flex-col gap-1.5">
+            {(neighbors ?? []).length ? (
+              neighbors.map((n) => (
+                <div key={n.id} className="flex items-center gap-2">
+                  <span className="nx-num w-[62px] shrink-0 truncate text-[9.5px] text-nx-dim">
+                    {shortId(n.id)}
+                  </span>
+                  <Meter
+                    value={Math.min(1, n.distance / 0.3)}
+                    color={
+                      n.led_to_incident
+                        ? 'var(--color-nx-failing)'
+                        : 'var(--color-nx-proven)'
+                    }
+                  />
+                  <span className="nx-num w-[42px] shrink-0 text-right text-[9.5px] text-nx-muted">
+                    {fixed(n.distance, 3)}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <span className="text-[11px] text-nx-faint">
+                No neighbours returned for this prediction.
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
       <Pipeline stages={pipeline} />
-    </>
+    </div>
   )
 }
+
+// The four trajectory channels, in the mockup's order: the alarming one first.
+const CHANNEL_COLORS = [
+  'var(--color-nx-failing)',
+  'var(--color-nx-accent)',
+  'var(--color-nx-experimental)',
+  'var(--color-nx-proven)',
+]
 
 /**
  * The fallback the Overview lands on almost all of the time: the most recent
@@ -362,30 +424,8 @@ function IncidentEvidence({ incident }) {
 
       <div className="grid grid-cols-[1fr_240px] gap-5 border-t border-nx-line px-5 py-4">
         <div>
-          <div className="flex items-center gap-2">
-            <Label>Precursor window</Label>
-            <span className="nx-num text-[10px] text-nx-faint-2">
-              {incident.precursor
-                ? `${names.length} channels · ${num(incident.precursor.lead_minutes)} min lead`
-                : 'no precursor snapshot recorded'}
-            </span>
-          </div>
-          {names.length ? (
-            <>
-              <div className="mt-2 rounded border border-nx-line-soft bg-nx-sunken p-2">
-                {names.map((name, i) => (
-                  <Sparkline key={name} points={metrics[name]} color={colors[i % colors.length]} />
-                ))}
-              </div>
-              <div className="mt-2 flex flex-wrap gap-3">
-                {names.map((name, i) => (
-                  <span key={name} className="flex items-center gap-1.5 text-[9.5px] text-nx-dim">
-                    <Dot color={colors[i % colors.length]} size={4} />
-                    {name}
-                  </span>
-                ))}
-              </div>
-            </>
+          {incident.precursor?.metrics ? (
+            <TrajectoryChart trajectory={{ metrics: incident.precursor.metrics }} />
           ) : (
             <p className="mt-3 text-[11.5px] text-nx-faint">
               This incident has no row in <span className="nx-num">precursor_snapshots</span>, so
@@ -610,6 +650,41 @@ function FleetTile({ service, last, ramping, onRamp }) {
         </span>
       </div>
 
+      {/* Each channel's latest sample as a fraction of its declared operating
+          range. The scales come from the API, which reads them from the same
+          table the embedding quantizes against. */}
+      {service.levels?.length ? (
+        <div className="flex w-full gap-2 pt-0.5">
+          {service.levels.slice(0, 3).map((level) => {
+            const bar =
+              level.level > 0.72
+                ? 'var(--color-nx-failing)'
+                : level.level > 0.48
+                  ? 'var(--color-nx-experimental)'
+                  : 'var(--color-nx-proven)'
+            return (
+              <div
+                key={level.metric}
+                className="flex min-w-0 flex-1 flex-col gap-1"
+                title={`${level.metric} = ${level.value} ${level.unit}${
+                  level.trend ? ` · ${level.trend}` : ''
+                }`}
+              >
+                <div className="h-[3px] w-full overflow-hidden rounded-full bg-white/[0.07]">
+                  <div
+                    className="h-full rounded-full transition-[width] duration-500"
+                    style={{ width: `${level.level * 100}%`, background: bar }}
+                  />
+                </div>
+                <span className="nx-num truncate text-[8px] text-nx-faint-2">
+                  {level.metric.replace(/_(pct|ms|utilization|rate)$/, '').slice(0, 9)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+
       <div className="flex w-full items-center gap-2 pt-0.5">
         <span className="nx-num text-[9px] uppercase tracking-[0.08em]" style={{ color }}>
           {service.status}
@@ -819,16 +894,50 @@ export function EventRow({ event, showDelta = true }) {
             </span>
           </div>
         ) : null}
-        {Object.keys(event.details ?? {}).length ? (
-          <div className="nx-num mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[9.5px] text-nx-faint">
-            {Object.entries(event.details).map(([key, value]) => (
-              <span key={key}>
-                {key}={typeof value === 'object' ? JSON.stringify(value) : String(value)}
-              </span>
-            ))}
-          </div>
-        ) : null}
+        <EventDetails details={event.details} />
       </div>
     </div>
+  )
+}
+
+// `details` is free-form JSONB written by the agents, so the renderer cannot
+// assume any key exists. It picks out the one prose key if there is one and
+// shows the rest as compact chips, which is the difference between a feed and
+// a JSON dump.
+const PROSE_KEYS = ['note', 'reason', 'summary', 'message', 'detail']
+const HIDDEN_KEYS = ['prediction_id', 'playbook_id', 'incident_id']
+
+function EventDetails({ details }) {
+  const entries = Object.entries(details ?? {}).filter(
+    ([, value]) => value !== null && value !== undefined && value !== '',
+  )
+  if (!entries.length) return null
+
+  const proseKey = PROSE_KEYS.find((key) => typeof details[key] === 'string')
+  const prose = proseKey ? details[proseKey] : null
+  const chips = entries.filter(
+    ([key, value]) =>
+      key !== proseKey && !HIDDEN_KEYS.includes(key) && typeof value !== 'object',
+  )
+
+  return (
+    <>
+      {prose ? (
+        <p className="mt-1 text-[11px] leading-relaxed text-nx-dim">{prose}</p>
+      ) : null}
+      {chips.length ? (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {chips.map(([key, value]) => (
+            <span
+              key={key}
+              className="nx-num rounded-[3px] bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-nx-faint"
+            >
+              <span className="text-nx-faint-2">{key.replace(/_/g, ' ')}</span>{' '}
+              <span className="text-nx-muted-3">{String(value)}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </>
   )
 }

@@ -43,12 +43,20 @@ def _resolve_provider() -> str:
         import boto3
 
         if boto3.Session().get_credentials() is not None:
+            from . import bedrock
+
+            bedrock._client().invoke_model(
+                modelId=config.BEDROCK_EMBEDDING_MODEL_ID,
+                body='{"inputText":"probe","dimensions":1024}',
+                accept="application/json",
+                contentType="application/json",
+            )
             return "bedrock"
-    except Exception as e:  # boto3 absent, or credential lookup blew up
-        logger.warning("credential probe failed, falling back to local", error=str(e))
+    except Exception as e:  # boto3 absent, credentials missing, or Bedrock model access denied
+        logger.warning("bedrock probe failed, falling back to local embedder", error=str(e))
     logger.warning(
-        "no AWS credentials resolved — using the local deterministic embedder; "
-        "set EMBEDDING_PROVIDER=bedrock and re-seed before trusting production distances"
+        "no AWS credentials or Bedrock model access resolved — using the local deterministic embedder; "
+        "grant Bedrock model access in AWS console and set EMBEDDING_PROVIDER=bedrock when ready"
     )
     return "local"
 

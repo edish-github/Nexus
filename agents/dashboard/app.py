@@ -26,15 +26,17 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
+from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
 import psycopg
 
-from nexus_common import config, db, log
+from nexus_common import config, db, log, trajectory
 
 logger = log.get_logger("dashboard")
 
@@ -109,6 +111,12 @@ def _rows_as_dicts(cur) -> list[dict]:
 _RETRYABLE = ("40001", "40003", "08000", "08003", "08006", "57P01")
 
 
+# Wall-clock of the vector searches this process has actually run. The header
+# reports a percentile of these rather than a number from a metrics system,
+# because this is the latency the dashboard itself experienced.
+_vector_timings: deque[float] = deque(maxlen=64)
+
+
 def _select(sql: str, params: tuple = (), *, as_of: str | None = None) -> list[dict]:
     """Run one read. `as_of` is a SQL time expression pinning the transaction.
 
@@ -122,7 +130,10 @@ def _select(sql: str, params: tuple = (), *, as_of: str | None = None) -> list[d
                 with conn.cursor() as cur:
                     if as_of:
                         cur.execute(f"SET TRANSACTION AS OF SYSTEM TIME {as_of}")
+                    started = time.perf_counter()
                     cur.execute(sql, params)
+                    if "<=>" in sql:
+                        _vector_timings.append((time.perf_counter() - started) * 1000)
                     out = _rows_as_dicts(cur)
                 conn.commit()
                 return out
@@ -354,10 +365,18 @@ def _cluster() -> dict:
                 "SELECT * FROM [SHOW DATABASES] WHERE database_name = current_database()"
             )[0]
             primary = row.get("primary_region")
+            # Availability zones per region. This is the one descriptor read
+            # that can be slow, so it is best-effort and cached with the rest;
+            # a region simply reports no zones if it could not be read.
+            zone_rows, _ = _try_select(
+                "SELECT region, zones FROM [SHOW REGIONS FROM DATABASE]",
+                what="region zones",
+            )
+            zones = {z["region"]: list(z["zones"] or []) for z in zone_rows}
             resolved = {
                 "database": row.get("database_name"),
                 "regions": [
-                    {"region": r, "primary": r == primary}
+                    {"region": r, "primary": r == primary, "zones": zones.get(r, [])}
                     for r in (row.get("regions") or [])
                 ],
                 "survival_goal": row.get("survival_goal"),
@@ -366,11 +385,55 @@ def _cluster() -> dict:
             logger.warning("cluster topology unavailable", error=str(e))
         _topology = resolved
 
-    out: dict[str, Any] = {**_topology, "logical_ts": None}
+    out: dict[str, Any] = {
+        **_topology,
+        "regions": [dict(r) for r in _topology.get("regions", [])],
+        "logical_ts": None,
+    }
+
+    # How many rows each region actually owns. `playbooks` and `incidents` are
+    # REGIONAL BY ROW, so this is the locality doing visible work rather than a
+    # topology diagram that would look the same on a single-region cluster.
+    homed, _ = _try_select(
+        """
+        SELECT crdb_region::STRING AS region,
+               count(*) FILTER (WHERE src = 'playbooks') AS playbooks,
+               count(*) FILTER (WHERE src = 'incidents') AS incidents
+          FROM (SELECT crdb_region, 'playbooks' AS src FROM playbooks
+                UNION ALL
+                SELECT crdb_region, 'incidents' AS src FROM incidents)
+         GROUP BY crdb_region
+        """,
+        as_of=FOLLOWER,
+        what="rows homed per region",
+    )
+    by_region = {r["region"]: r for r in homed}
+    for region in out["regions"]:
+        counts = by_region.get(region["region"])
+        region["playbooks_homed"] = counts["playbooks"] if counts else None
+        region["incidents_homed"] = counts["incidents"] if counts else None
+
     try:
-        out["logical_ts"] = _select("SELECT cluster_logical_timestamp()::STRING AS ts")[0]["ts"]
+        clock = _select(
+            """
+            SELECT cluster_logical_timestamp()::STRING AS ts,
+                   extract(epoch FROM (now() - follower_read_timestamp())) AS staleness
+            """
+        )[0]
+        out["logical_ts"] = clock["ts"]
+        out["follower_staleness_seconds"] = round(float(clock["staleness"]), 2)
     except Exception as e:
-        logger.warning("cluster_logical_timestamp unavailable", error=str(e))
+        logger.warning("cluster clock unavailable", error=str(e))
+        out["follower_staleness_seconds"] = None
+
+    # Measured, not reported: the median of the vector searches this process has
+    # actually run since it started.
+    timings = sorted(_vector_timings)
+    out["vector_search"] = {
+        "samples": len(timings),
+        "p50_ms": round(timings[len(timings) // 2], 1) if timings else None,
+        "p95_ms": round(timings[int(len(timings) * 0.95)], 1) if timings else None,
+    }
     return out
 
 
@@ -425,6 +488,26 @@ def _fleet(
             key = "latency_p99_ms" if "latency_p99_ms" in series else next(iter(series), None)
             if key and series[key][0]:
                 delta = round((series[key][-1] - series[key][0]) / series[key][0] * 100, 2)
+
+        # Each metric's latest sample as a fraction of its declared operating
+        # range. The scales are the same ones the embedding quantizes against,
+        # so a full bar means the same thing here as it does to Oracle.
+        levels = []
+        for name, values in sorted(series.items()):
+            scale = trajectory.METRIC_SCALES.get(name)
+            if not scale or not values:
+                continue
+            _, lo, hi = scale
+            span = (hi - lo) or 1.0
+            levels.append(
+                {
+                    "metric": name,
+                    "value": values[-1],
+                    "unit": scale[0],
+                    "level": round(min(1.0, max(0.0, (values[-1] - lo) / span)), 4),
+                    "trend": (summary.get(name) or {}).get("trend"),
+                }
+            )
         tiles.append(
             {
                 "service_name": service,
@@ -439,6 +522,7 @@ def _fleet(
                 "sparkline": sparkline,
                 "latest": latest_point,
                 "summary": summary,
+                "levels": levels,
                 "delta_pct": delta,
                 "open_prediction_id": open_predictions.get(service),
             }
@@ -461,7 +545,8 @@ def _memory_and_counters() -> tuple[dict, dict, list[str]]:
                  WHERE status = 'active' AND memory_tier <> 'institutional') AS semantic,
                (SELECT count(*) FROM institutional_playbooks) AS institutional,
                (SELECT count(*) FILTER (WHERE was_prevented) FROM incidents) AS prevented,
-               (SELECT count(*) FILTER (WHERE NOT was_prevented) FROM incidents) AS impacted
+               (SELECT count(*) FILTER (WHERE NOT was_prevented) FROM incidents) AS impacted,
+               (SELECT count(*) FROM evolution_log) AS evolution_events
         """,
         as_of=FOLLOWER,
     )[0]
@@ -489,7 +574,8 @@ def _counters(incidents: dict) -> dict:
     pred = _select(
         """
         SELECT count(*) FILTER (WHERE prevention_status IN ('pending','preventing')) AS in_flight,
-               count(*) FILTER (WHERE prevention_status = 'shadowed') AS shadowed
+               count(*) FILTER (WHERE prevention_status = 'shadowed') AS shadowed,
+               (SELECT count(*) FROM approvals WHERE status = 'pending') AS awaiting
           FROM predictions
         """
     )[0]
@@ -499,6 +585,7 @@ def _counters(incidents: dict) -> dict:
         "impacted": {"value": inc["impacted"], "source": "incidents"},
         "in_flight": {"value": pred["in_flight"], "source": "predictions.prevention_status"},
         "shadowed": {"value": pred["shadowed"], "source": "predictions.prevention_status"},
+        "awaiting_approval": {"value": pred["awaiting"], "source": "approvals.status"},
     }
 
 
@@ -533,6 +620,73 @@ def _pipeline(prediction: dict) -> list[dict]:
     return out
 
 
+def _centre_evidence(prediction: dict) -> dict:
+    """The evidence strip under the centre panel's posterior.
+
+    A prediction's headline number is a claim; the matched precursors are the
+    reason for it, so the Overview shows both rather than making the reader
+    open the detail screen to find out what the posterior was built from. The
+    retrieval also feeds the header's measured vector-search latency, because
+    it is the only vector search a plain Overview poll performs.
+    """
+    try:
+        neighbors = _neighbors(prediction["id"])[:6]
+    except Exception as e:
+        logger.warning("centre evidence unavailable", error=str(e))
+        return {"neighbors": [], "trajectory": None}
+
+    # The live telemetry window for this prediction's service, or fallback to precursor_snapshots
+    # when the 2-hour sensory TTL has cleared telemetry_embeddings.
+    window, _ = _try_select(
+        """
+        SELECT raw_metrics, captured_at FROM telemetry_embeddings
+         WHERE service_name = %s ORDER BY captured_at DESC LIMIT 1
+        """,
+        (prediction["service_name"],),
+        what="sensory window for the centre panel",
+    )
+    trajectory_series = None
+    if window:
+        digest = window[0]["raw_metrics"] or {}
+        series = digest.get("metrics") or {}
+        if series:
+            trajectory_series = {
+                "captured_at": _iso(window[0]["captured_at"]),
+                "metrics": series,
+            }
+    if not trajectory_series:
+        snapshots, _ = _try_select(
+            """
+            SELECT metric_digest, created_at FROM precursor_snapshots
+             WHERE service_name = %s ORDER BY created_at DESC LIMIT 1
+            """,
+            (prediction["service_name"],),
+            what="precursor snapshot fallback for centre panel",
+        )
+        if not snapshots:
+            snapshots, _ = _try_select(
+                """
+                SELECT metric_digest, created_at FROM precursor_snapshots
+                 ORDER BY created_at DESC LIMIT 1
+                """,
+                what="global precursor snapshot fallback for centre panel",
+            )
+        if snapshots:
+            digest = snapshots[0]["metric_digest"] or {}
+            if isinstance(digest, str):
+                try:
+                    digest = json.loads(digest)
+                except Exception:
+                    digest = {}
+            series = digest.get("metrics") or {}
+            if series:
+                trajectory_series = {
+                    "captured_at": _iso(snapshots[0]["created_at"]),
+                    "metrics": series,
+                }
+    return {"neighbors": neighbors, "trajectory": trajectory_series}
+
+
 def _centre(regions: dict[str, str]) -> dict:
     """The centre panel, resolved server-side into one of four states.
 
@@ -550,7 +704,8 @@ def _centre(regions: dict[str, str]) -> dict:
     if active:
         prediction = _shape_prediction(active[0], regions)
         return {"kind": "active_prediction", "heading": "ACTIVE PREDICTION",
-                "prediction": prediction, "pipeline": _pipeline(prediction)}
+                "prediction": prediction, "pipeline": _pipeline(prediction),
+                **_centre_evidence(prediction)}
 
     resolved = _select(
         """
@@ -563,7 +718,8 @@ def _centre(regions: dict[str, str]) -> dict:
     if resolved:
         prediction = _shape_prediction(resolved[0], regions)
         return {"kind": "last_prediction", "heading": "LAST PREVENTION",
-                "prediction": prediction, "pipeline": _pipeline(prediction)}
+                "prediction": prediction, "pipeline": _pipeline(prediction),
+                **_centre_evidence(prediction)}
 
     # No prediction has ever been written. The prevention history that does
     # exist lives in `incidents`, so the panel shows the most recent one with
@@ -768,6 +924,49 @@ def _backtest() -> dict | None:
     return _backtest_cache
 
 
+def _agents() -> list[dict]:
+    """Each agent's footprint, measured by what it has written.
+
+    There is no metrics backend behind this and it deliberately does not
+    pretend to be one: an agent's invocation count lives in CloudWatch, not in
+    the memory layer. What the memory layer does know is how many rows each
+    agent has produced and when the last one landed, which is the thing that
+    actually tells you whether the pipeline is moving.
+    """
+    row = _select(
+        """
+        SELECT (SELECT count(*) FROM predictions) AS oracle_n,
+               (SELECT max(created_at) FROM predictions) AS oracle_at,
+               (SELECT count(*) FROM predictions WHERE claimed_at IS NOT NULL) AS sentinel_n,
+               (SELECT max(claimed_at) FROM predictions) AS sentinel_at,
+               (SELECT count(*) FROM precursor_snapshots
+                 WHERE created_at > now() - INTERVAL '7 days') AS diagnostician_n,
+               (SELECT max(created_at) FROM precursor_snapshots) AS diagnostician_at,
+               (SELECT count(*) FROM predictions
+                 WHERE playbook_applied IS NOT NULL) AS guardian_n,
+               (SELECT max(resolved_at) FROM predictions) AS guardian_at,
+               (SELECT count(*) FROM evolution_log) AS chronicler_n,
+               (SELECT max(created_at) FROM evolution_log) AS chronicler_at
+        """
+    )[0]
+    spec = [
+        ("Oracle", "predictions", "oracle"),
+        ("Sentinel", "predictions.claimed_at", "sentinel"),
+        ("Diagnostician", "precursor_snapshots (7d)", "diagnostician"),
+        ("Guardian", "predictions.playbook_applied", "guardian"),
+        ("Chronicler", "evolution_log", "chronicler"),
+    ]
+    return [
+        {
+            "name": name,
+            "writes": writes,
+            "rows": row[f"{key}_n"],
+            "last_write_at": _iso(row[f"{key}_at"]),
+        }
+        for name, writes, key in spec
+    ]
+
+
 def get_overview() -> dict:
     regions = _service_regions()
     open_predictions = {
@@ -783,15 +982,25 @@ def get_overview() -> dict:
     }
     fleet, fleet_degraded = _fleet(regions, open_predictions)
     memory, incidents, memory_degraded = _memory_and_counters()
+    cnts = _counters(incidents)
     return {
         "generated_at": _iso(datetime.now(UTC)),
         "read_at": "follower_read_timestamp()",
         "cluster": _cluster(),
-        "counters": _counters(incidents),
+        "counters": cnts,
         "fleet": fleet,
         "memory": memory,
         "centre": _centre(regions),
         "backtest": _backtest(),
+        "agents": _agents(),
+        # Sidebar badges. Every one is a live count, so a badge going from 0 to
+        # 1 during a demo is the database changing, not a UI animation.
+        "nav_counts": {
+            "predictions": cnts["in_flight"]["value"],
+            "playbooks": memory["semantic"]["count"],
+            "evolution": incidents["evolution_events"],
+            "approvals": cnts["awaiting_approval"]["value"],
+        },
         "evolution_feed": _evolution_events(limit=14),
         # Non-empty when a panel could not be read. The UI shows these verbatim
         # rather than rendering the affected panel as if it were healthy.
@@ -891,9 +1100,9 @@ def _neighbors(prediction_id: str, as_of: str | None = None) -> list[dict]:
             "region": r["region"],
             "outcome_category": r["outcome_category"],
             "led_to_incident": r["led_to_incident"],
-            "distance": round(float(r["distance"]), 6),
-            "similarity": round(1.0 - float(r["distance"]), 6),
-            "lead_minutes": float(r["lead_minutes"]) if r["lead_minutes"] else None,
+            "distance": round(float(r["distance"]), 6) if r["distance"] is not None else 0.0,
+            "similarity": round(1.0 - (float(r["distance"]) if r["distance"] is not None else 0.0), 6),
+            "lead_minutes": float(r["lead_minutes"]) if r["lead_minutes"] is not None else None,
             "window_start": _iso(r["window_start"]),
             "window_end": _iso(r["window_end"]),
         }
