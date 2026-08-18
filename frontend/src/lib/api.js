@@ -45,7 +45,7 @@ export async function apiGet(path, { params, signal } = {}) {
 
   let response
   try {
-    response = await fetch(url(path, params), { signal, headers: { accept: 'application/json' } })
+    response = await fetch(url(path, params), { signal })
   } catch (cause) {
     if (cause?.name === 'AbortError') throw cause
     throw new ApiError(`Cannot reach the dashboard API at ${BASE}.`, {
