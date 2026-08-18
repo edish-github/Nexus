@@ -54,7 +54,7 @@ verify-full: ## As `verify`, plus the 10k-row load check and the TTL reap check
 	uv run python scripts/verify_phase2.py --load-rows 10000 --ttl-check
 
 live: ## Run the synthetic fleet with the ramp control API on :8000
-	uv run python -m generator.live
+	PYTHONPATH=.:layers/shared/python:$$PYTHONPATH uv run python -m generator.live
 
 pipeline: ## Exit gate 3+4a: ramp → predict → claim → compete → execute → prevented
 	uv run python scripts/pipeline_local.py --scenario prevented

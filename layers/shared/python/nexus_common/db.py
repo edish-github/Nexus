@@ -38,8 +38,10 @@ def get_pool() -> ConnectionPool:
             kwargs["options"] = f"-c statement_timeout={int(_STATEMENT_TIMEOUT_MS)}"
         _pool = ConnectionPool(
             conninfo=config.db_dsn(),
-            min_size=1,
+            min_size=0,
             max_size=4,
+            max_idle=30.0,
+            check=ConnectionPool.check_connection,
             kwargs=kwargs,
             open=True,
         )

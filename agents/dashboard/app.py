@@ -124,7 +124,7 @@ def _select(sql: str, params: tuple = (), *, as_of: str | None = None) -> list[d
     transaction, which it is: psycopg opens the transaction lazily, so this is
     what starts it.
     """
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         try:
             with db.connection() as conn:
                 with conn.cursor() as cur:
@@ -137,11 +137,21 @@ def _select(sql: str, params: tuple = (), *, as_of: str | None = None) -> list[d
                     out = _rows_as_dicts(cur)
                 conn.commit()
                 return out
-        except psycopg.Error as e:
+        except (psycopg.OperationalError, psycopg.Error, Exception) as e:
             state = getattr(e, "sqlstate", None)
-            dropped = state is None and "connection" in str(e).lower()
-            if attempt == 1 and (state in _RETRYABLE or dropped):
-                logger.warning("retrying read", sqlstate=state, error=str(e)[:120])
+            err_str = str(e).lower()
+            dropped = (
+                state is None
+                or state in _RETRYABLE
+                or "connection" in err_str
+                or "ssl" in err_str
+                or "closed" in err_str
+                or "eof" in err_str
+                or "broken" in err_str
+            )
+            if attempt < 3 and dropped:
+                logger.warning("retrying read", attempt=attempt, error=str(e)[:120])
+                time.sleep(0.15)
                 continue
             raise
     raise RuntimeError("unreachable")
@@ -1101,7 +1111,9 @@ def _neighbors(prediction_id: str, as_of: str | None = None) -> list[dict]:
             "outcome_category": r["outcome_category"],
             "led_to_incident": r["led_to_incident"],
             "distance": round(float(r["distance"]), 6) if r["distance"] is not None else 0.0,
-            "similarity": round(1.0 - (float(r["distance"]) if r["distance"] is not None else 0.0), 6),
+            "similarity": round(
+                1.0 - (float(r["distance"]) if r["distance"] is not None else 0.0), 6
+            ),
             "lead_minutes": float(r["lead_minutes"]) if r["lead_minutes"] is not None else None,
             "window_start": _iso(r["window_start"]),
             "window_end": _iso(r["window_end"]),
@@ -1202,7 +1214,17 @@ def _execution(prediction: dict) -> dict:
     }
 
 
+_prediction_cache: dict[str, tuple[dict, float]] = {}
+PREDICTION_CACHE_TTL = 30.0  # 30 seconds TTL
+
+
 def get_prediction(prediction_id: str) -> dict | None:
+    now = time.time()
+    if prediction_id in _prediction_cache:
+        cached_val, cached_at = _prediction_cache[prediction_id]
+        if now - cached_at < PREDICTION_CACHE_TTL:
+            return cached_val
+
     rows = _select(f"{_PREDICTION_SELECT} WHERE p.id = %s", (prediction_id,))
     if not rows:
         return None
@@ -1211,7 +1233,7 @@ def get_prediction(prediction_id: str) -> dict | None:
     incidents = sum(1 for n in neighbors if n["led_to_incident"])
     benign = len(neighbors) - incidents
     competition, note = _competition(prediction)
-    return {
+    result = {
         "prediction": prediction,
         "retrieval_sql": _RETRIEVAL_SQL.format(k=RETRIEVAL_K),
         "retrieval_k": RETRIEVAL_K,
@@ -1226,30 +1248,22 @@ def get_prediction(prediction_id: str) -> dict | None:
         "competition_note": note,
         "execution": _execution(prediction),
     }
+    _prediction_cache[prediction_id] = (result, now)
+    return result
+
+
+_replay_cache: dict[str, tuple[tuple[int, dict], float]] = {}
+REPLAY_CACHE_TTL = 30.0
 
 
 def replay_prediction(prediction_id: str) -> tuple[int, dict]:
-    """Re-read the decision's evidence at the instant the decision was made.
+    """Re-read the decision's evidence at the instant the decision was made."""
+    now_ts = time.time()
+    if prediction_id in _replay_cache:
+        cached_val, cached_at = _replay_cache[prediction_id]
+        if now_ts - cached_at < REPLAY_CACHE_TTL:
+            return cached_val
 
-    The timestamp comes from Oracle, which captured `cluster_logical_timestamp()`
-    inside the transaction that wrote the prediction and stored it alongside the
-    evidence. That is the only timestamp that means "decision time".
-
-    It is emphatically *not* `crdb_internal_mvcc_timestamp` on the prediction row.
-    That is the timestamp of the row's most recent version, and this row is
-    written to repeatedly after the decision: Sentinel claims it, Guardian
-    resolves it. Replaying at that timestamp would pin the read to *after* the
-    outcome was known — the precise hindsight the button exists to rule out — and
-    would then report the two panes as identical, which is how a broken proof
-    looks exactly like a working one. The MVCC timestamp is kept only as a
-    labelled fallback for a prediction with no evidence row.
-
-    The two panes are allowed to differ, and often should. Diagnostician promotes
-    the window this very prediction was about into `precursor_snapshots`, so
-    memory really has grown since. A divergence that names what was added is a
-    stronger demonstration that the pinned read is genuine time travel than a
-    match would be.
-    """
     rows = _select(
         """
         SELECT id, alpha, beta, created_at,
@@ -1298,12 +1312,12 @@ def replay_prediction(prediction_id: str) -> tuple[int, dict]:
     identical = [n["id"] for n in pinned] == [n["id"] for n in live] and all(
         abs(a["distance"] - b["distance"]) < 1e-9 for a, b in zip(pinned, live, strict=False)
     )
-    then, now = {n["id"] for n in pinned}, {n["id"] for n in live}
+    then_ids, now_ids = {n["id"] for n in pinned}, {n["id"] for n in live}
     # What memory learned in between, named rather than summarized. A neighbour
     # that is in the live top-k and not in the pinned one is something the system
     # did not know when it decided.
-    added = [n for n in live if n["id"] not in then]
-    dropped = [n for n in pinned if n["id"] not in now]
+    added = [n for n in live if n["id"] not in then_ids]
+    dropped = [n for n in pinned if n["id"] not in now_ids]
 
     def stats(neighbors: list[dict]) -> dict:
         incidents = sum(1 for n in neighbors if n["led_to_incident"])
@@ -1318,7 +1332,7 @@ def replay_prediction(prediction_id: str) -> tuple[int, dict]:
     if created.tzinfo is None:
         created = created.replace(tzinfo=UTC)
 
-    return 200, {
+    res = (200, {
         "prediction_id": prediction_id,
         "commit_ts": commit_ts,
         "commit_ts_source": source,
@@ -1343,7 +1357,9 @@ def replay_prediction(prediction_id: str) -> tuple[int, dict]:
              **stats(live), "rows": live},
         ],
         "drift": {"snapshots_written_since": written_since},
-    }
+    })
+    _replay_cache[prediction_id] = (res, now_ts)
+    return res
 
 
 # --------------------------------------------------------------------------- #

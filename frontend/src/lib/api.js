@@ -1,7 +1,12 @@
 // The only place the app talks to the network. Every screen's data comes
 // through here; there is no other source, and no fallback if a call fails.
 
-const BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+const BASE = (
+  import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.DEV
+    ? 'http://127.0.0.1:8787'
+    : 'https://pqy4r2l3rghfqhotpftt37ncqu0tcuxh.lambda-url.us-east-1.on.aws')
+).replace(/\/+$/, '')
 
 export class ApiError extends Error {
   constructor(message, { code, status, path } = {}) {

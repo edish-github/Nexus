@@ -55,7 +55,7 @@ def _resolve_provider() -> str:
     except Exception as e:  # boto3 absent, credentials missing, or Bedrock model access denied
         logger.warning("bedrock probe failed, falling back to local embedder", error=str(e))
     logger.warning(
-        "no AWS credentials or Bedrock model access resolved — using the local deterministic embedder; "
+        "no AWS credentials or Bedrock model access resolved — using local embedder; "
         "grant Bedrock model access in AWS console and set EMBEDDING_PROVIDER=bedrock when ready"
     )
     return "local"

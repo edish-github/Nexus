@@ -1,0 +1,41 @@
+---
+title: NEXUS — the loop, in one line
+config:
+  flowchart:
+    curve: basis
+    htmlLabels: false
+    nodeSpacing: 55
+    rankSpacing: 80
+---
+flowchart LR
+    classDef sub  fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef enc  fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#3f0a24
+    classDef mem  fill:#dbeafe,stroke:#1d4ed8,stroke-width:2.5px,color:#0b1a3a
+    classDef ag   fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#210b4a
+    classDef aws  fill:#ffedd5,stroke:#c2410c,stroke-width:2px,color:#3b1206
+
+    F["SERVICE FLEET
+telemetry"]
+    E["EMBED
+VECTOR 1024"]
+    M[("COCKROACHDB
+4 memory tiers
+3 regions")]
+    O["ORACLE
+k-NN → Beta posterior"]
+    P[("predictions")]
+    C["CHANGEFEED
+→ Lambda → EventBridge"]
+    S["STEP FUNCTIONS
+Sentinel → Diagnostician
+→ Guardian → Chronicler"]
+
+    F --> E --> M --> O --> P ==> C ==> S
+    S -- "act" --> F
+    S -- "remember" --> M
+
+    class F sub
+    class E enc
+    class M,P mem
+    class O,S ag
+    class C aws

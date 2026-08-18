@@ -158,7 +158,7 @@ export default function App() {
         </Banner>
       ) : null}
 
-      {overview.error && isConfigured ? (
+      {overview.error && isConfigured && !data ? (
         <Banner tone="failing">
           <strong className="font-medium">Memory layer unreachable.</strong>{' '}
           {overview.error.message}
@@ -202,7 +202,7 @@ export default function App() {
                     style={{ background: active ? 'var(--color-nx-accent)' : 'transparent' }}
                   />
                   {item.label}
-                  {badge === null || badge === undefined ? null : (
+                  {!badge ? null : (
                     <span
                       className="nx-num ml-auto rounded-[3px] px-1.5 py-px text-[10px]"
                       style={{
